@@ -42,3 +42,8 @@ Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`.
   any green or violet marker collides with them for colour-blind readers (green vs orange model
   ΔE≈1 protan; violet vs blue flux ΔE≈5 deutan); neutral ink is ≥25 ΔE from both in every CVD sim.
   Ticks/labels start 8 px from the data (`&lg=` px to experiment) and ticks carry a surface halo.
+* Fully masked spectra (every pixel ivar=0, e.g. unassigned/broken positioners with COADD_NUMEXP=0):
+  "NO DATA" badge, hatched main plot with the reason (NUMEXP, FIBERSTATUS), no key-line panels,
+  hatched grid thumbnail. Redrock's placeholders for these (NPIXELS=0, CHI2=9e99, DELTACHI2≈1.9e84)
+  are shown as "no fit" / "—" (raw values kept in the Redrock table). Blank OBJTYPE + negative
+  TARGETID is labeled UNASSIGNED, not SKY. Filter tokens `nodata`, `unassigned`.

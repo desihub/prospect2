@@ -12,7 +12,7 @@ Usage:
         -o alt/prospect2_example.html -f 2000-2020
 """
 
-import os, sys, json, gzip, base64, argparse
+import os, sys, json, gzip, base64, argparse, warnings
 import numpy as np
 from astropy.table import Table
 from astropy.io import fits
@@ -202,7 +202,9 @@ def main():
     for b in sp.bands:
         with np.errstate(invalid='ignore'):
             s = sp.flux[b] * np.sqrt(sp.ivar[b])
-        snr[b] = np.nanmedian(np.where(sp.ivar[b] > 0, s, np.nan), axis=1)
+        with warnings.catch_warnings():         #- fully masked fibers -> NaN (shown as "—")
+            warnings.simplefilter('ignore', RuntimeWarning)
+            snr[b] = np.nanmedian(np.where(sp.ivar[b] > 0, s, np.nan), axis=1)
 
     #- Camera overlap regions [lo, hi, label], from the per-camera grids
     bands = sorted(sp.bands, key=lambda b: sp.wave[b][0])
