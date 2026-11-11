@@ -1,0 +1,7 @@
+# generated viewer pages (rebuild with make_prospect2.py)
+prospect2_*.html
+!prospect2_template.html
+
+__pycache__/
+*.pyc
+.DS_Store
