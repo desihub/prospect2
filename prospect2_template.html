@@ -588,13 +588,29 @@ let U = null, curData = null, YR = [-1, 1];
 function xform(lamObs) { return S.rest ? lamObs / (1 + zcur(S.cur)) : lamObs; }
 function toIdx(x) { const lam = S.rest ? x * (1 + zcur(S.cur)) : x; return Math.round((lam - D.wave0) / D.dwave); }
 
+const ghostCache = new Map();
+function ghostMask(i) {          // 1 where the pixel lies in an entirely masked camera and has no data
+  if (ghostCache.has(i)) return ghostCache.get(i);
+  const t = T[i], f = row(FLUX, i); let g = null;
+  if (!noData(t) && t.masked_cams?.length) {
+    g = new Uint8Array(NW);
+    for (const [lo, hi] of t.masked_cams) {
+      const k0 = Math.max(0, Math.round((lo - D.wave0) / D.dwave)), k1 = Math.min(NW - 1, Math.round((hi - D.wave0) / D.dwave));
+      for (let k = k0; k <= k1; k++) if (f[k] !== f[k]) g[k] = 1;
+    }
+  }
+  ghostCache.set(i, g); return g;
+}
 function computeSeries(i, sigma) {
   const sm = smooth(row(FLUX, i), row(NOISE, i), sigma);
-  let m = row(MODEL, i);
+  let m = noFit(T[i]) ? null : row(MODEL, i);   // no redrock fit -> no model
   if (m) {
     m = Float32Array.from(smoothPlain(shiftModel(m, zpipe(i), zcur(i)), sigma));
     const hide = row(MHIDE, i);                  // gaps follow the data's pixels at any z / sigma
     for (let k = 0; k < NW; k++) if (hide[k]) m[k] = NaN;
+    // no model over an entirely masked camera (a PCA fit extrapolated that far is misleading)
+    const gm = ghostMask(i);
+    if (gm) for (let k = 0; k < NW; k++) if (gm[k]) m[k] = NaN;
   }
   return { f: sm.f, n: sm.n, m };
 }
@@ -677,7 +693,7 @@ function drawLineTicks(u, ctx, lines, dpr) {
   const { top, height } = u.bbox, bot = top + height, X = v => u.valToPos(v, "x", true);
   const fs = 11 * dpr, lh = fs + 3 * dpr, gap = S.lgap * dpr, tick = 14 * dpr, edge = 26 * dpr, halo = css("--surface");
   ctx.font = `${fs}px ${css("--font")}`; ctx.setLineDash([]);
-  const placed = [];                                   // label boxes shared by both kinds
+  const placed = [...RESERVED];                        // label boxes shared by both kinds (+ masked-camera notes)
   for (const kind of ["emi", "abs"]) {
     const dir = kind === "emi" ? -1 : 1, col = css(kind === "emi" ? "--l-em" : "--l-abs");
     // one label per name for lines closer than ~30 px (doublets, H&K, ...)
@@ -734,10 +750,10 @@ function drawLineTicks(u, ctx, lines, dpr) {
   ctx.globalAlpha = 1;
 }
 // diagonal hatch = "masked / no data" (same look in the main plot, key-line panels, and grid thumbnails)
-function hatch(ctx, x, y, w, h, dpr = 1) {
+function hatch(ctx, x, y, w, h, dpr = 1, alpha = 0.7) {
   ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  ctx.fillStyle = css("--surface-2"); ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = css("--axis"); ctx.lineWidth = dpr; ctx.globalAlpha = 0.7;
+  ctx.globalAlpha = alpha / 0.7; ctx.fillStyle = css("--surface-2"); ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = css("--axis"); ctx.lineWidth = dpr; ctx.globalAlpha = alpha;
   const s = 8 * dpr; ctx.beginPath();
   for (let d = -h; d < w; d += s) { ctx.moveTo(x + d, y + h); ctx.lineTo(x + d + h, y); }
   ctx.stroke(); ctx.restore();
@@ -762,6 +778,7 @@ function noDataLines(t) {
   if (noFit(t)) out.push("redrock Z, SPECTYPE, ΔΧ² are placeholders (NPIXELS = 0)");
   return out;
 }
+let RESERVED = [];                 // plot-space boxes (device px) that line labels must avoid
 function drawOverlays(u, layer) {
   const ctx = u.ctx, { left, top, width, height } = u.bbox, dpr = devicePixelRatio || 1, zz = zcur(S.cur);
   const xmin = u.scales.x.min, xmax = u.scales.x.max;
@@ -769,8 +786,25 @@ function drawOverlays(u, layer) {
   ctx.save();
   ctx.beginPath(); ctx.rect(left, top, width, height); ctx.clip();
   const nd = noData(T[S.cur]);
+  if (layer === "under") RESERVED = [];
   if (layer === "under" && nd) hatch(ctx, left, top, width, height, dpr);
   if (layer === "over" && nd) { noDataNote(ctx, left + width / 2, top + height / 2, ["No data", ...noDataLines(T[S.cur])], dpr); ctx.restore(); return; }
+  if (layer === "under") for (const [lo, hi, b] of T[S.cur].masked_cams || []) {
+    if (nd) break;
+    const xa = Math.max(left, X(xform(lo))), xb = Math.min(left + width, X(xform(hi)));
+    if (xb <= xa) continue;
+    hatch(ctx, xa, top, xb - xa, height, dpr, 0.45);
+    const why = (T[S.cur].fiberstatus_names || []).filter(n => n.endsWith(b.toUpperCase()) && /AMP|CCD|COL|FIBER|PIX/.test(n));
+    const msg = `${b} camera masked${why.length ? ` (${why.join(", ")})` : ""}`, sub = "";
+    // label sits at the bottom of the band (above the overlap labels); its box is reserved so line labels avoid it
+    ctx.font = `600 ${11 * dpr}px ${css("--font")}`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+    const w = Math.max(ctx.measureText(msg).width, sub ? ctx.measureText(sub).width : 0) + 12 * dpr, h = (sub ? 30 : 17) * dpr;
+    const cx = Math.min(xb - w / 2, Math.max(xa + w / 2, (xa + xb) / 2)), y0 = top + height - h - 18 * dpr;
+    ctx.fillStyle = css("--surface"); ctx.globalAlpha = 0.92; ctx.fillRect(cx - w / 2, y0, w, h); ctx.globalAlpha = 1;
+    ctx.fillStyle = css("--ink-2"); ctx.fillText(msg, cx, y0 + 3 * dpr);
+    if (sub) { ctx.font = `${10 * dpr}px ${css("--font")}`; ctx.fillStyle = css("--muted"); ctx.fillText(sub, cx, y0 + 17 * dpr); }
+    RESERVED.push({ x0: cx - w / 2, x1: cx + w / 2, y0, y1: y0 + h });
+  }
   if (layer === "under" && S.show.overlap) {
     ctx.font = `${10 * dpr}px ${css("--font")}`; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
     for (const [a, b, lab] of D.overlaps || []) {
@@ -880,13 +914,18 @@ function miniPlot(cv, c, i0, i1, opts = {}) {
   if (!any) {
     hatch(ctx, 0, 0, w, h);
     ctx.font = `600 11px ${css("--font")}`; ctx.fillStyle = css("--ink-2"); ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    const msg = "all pixels masked", tw = ctx.measureText(msg).width + 12;
+    const cam = (opts.cams || []).find(([lo, hi]) => WAVE[i0] >= lo - D.dwave && WAVE[i1] <= hi + D.dwave);
+    const msg = cam ? `${cam[2]} camera masked` : "all pixels masked", tw = ctx.measureText(msg).width + 12;
     ctx.fillStyle = css("--surface"); ctx.fillRect(w / 2 - tw / 2, h / 2 - 9, tw, 18); ctx.fillStyle = css("--ink-2"); ctx.fillText(msg, w / 2, h / 2);
     return;
   }
   const [ylo, yhi] = yRange(c.f, S.show.model || opts.forceModel ? c.m : null, i0, i1, "robust");
   const pb = opts.axisLabels ? 14 : 2;
   const X = k => ((k - i0) / (i1 - i0)) * w, Y = v => (h - pb) - ((v - ylo) / (yhi - ylo)) * (h - pb - 2);
+  if (opts.ghostMask) for (let k = i0; k <= i1; k++) if (opts.ghostMask[k]) {        // masked-camera spans
+    let e = k; while (e < i1 && opts.ghostMask[e + 1]) e++;
+    hatch(ctx, X(k), 0, X(e) - X(k), h - pb, 1, 0.45); k = e;
+  }
   ctx.strokeStyle = css("--axis"); ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(w, Y(0)); ctx.stroke();
   if (opts.lines) {
@@ -925,7 +964,7 @@ function renderPanels() {
     const p = ps[k], a = (p.c - p.h) * (1 + zz), b = (p.c + p.h) * (1 + zz);
     const lines = D.lines.filter(l => l.wave > p.c - p.h && l.wave < p.c + p.h && (l.major || S.show.minor) && ((l.kind === "emi" && S.show.em) || (l.kind === "abs" && S.show.abs))).map(l => ({ ...l, obs: l.wave * (1 + zz) }));
     miniPlot(el.querySelector("canvas"), c, Math.floor((a - D.wave0) / D.dwave), Math.ceil((b - D.wave0) / D.dwave),
-      { lines, axisLabels: [`${(p.c - p.h).toFixed(0)}`, `${(p.c + p.h).toFixed(0)} Å rest`] });
+      { lines, cams: T[i].masked_cams, axisLabels: [`${(p.c - p.h).toFixed(0)}`, `${(p.c + p.h).toFixed(0)} Å rest`] });
     el.onclick = () => U.setScale("x", { min: S.rest ? p.c - p.h : a, max: S.rest ? p.c + p.h : b });
   });
 }
@@ -1015,7 +1054,7 @@ function renderGallery() {
     if (!en.isIntersecting) return; io.unobserve(en.target);
     const i = +en.target.dataset.i;
     if (!thumbCache.has(i)) thumbCache.set(i, computeSeries(i, 3));
-    miniPlot(en.target.querySelector("canvas"), thumbCache.get(i), 0, NW - 1, { noNoise: true, forceModel: true });
+    miniPlot(en.target.querySelector("canvas"), thumbCache.get(i), 0, NW - 1, { noNoise: true, forceModel: true, ghostMask: ghostMask(i) });
   }));
   cards.forEach(c => io.observe(c));
 }

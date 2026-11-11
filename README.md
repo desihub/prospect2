@@ -47,3 +47,8 @@ Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`.
   hatched grid thumbnail. Redrock's placeholders for these (NPIXELS=0, CHI2=9e99, DELTACHI2≈1.9e84)
   are shown as "no fit" / "—" (raw values kept in the Redrock table). Blank OBJTYPE + negative
   TARGETID is labeled UNASSIGNED, not SKY. Filter tokens `nodata`, `unassigned`.
+* Entirely masked camera (e.g. BADAMPZ: flux=ivar=0 for the whole z camera, 4 fibers in petal 4):
+  the camera's range is hatched and labeled "z camera masked (BADAMPZ)", and key-line panels in it
+  say "z camera masked". Neither data nor model are drawn there (the coadd stores zeros, and the
+  PCA model extrapolated over a whole camera is distractingly wrong); nothing masked enters the
+  y-range. Grid thumbnails hatch the span too. Small masked regions are still plain gaps.

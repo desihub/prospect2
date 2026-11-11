@@ -260,6 +260,9 @@ def main():
             fiberstatus=int(r['COADD_FIBERSTATUS']),
             fiberstatus_names=(fibermask.names(int(r['COADD_FIBERSTATUS'])) if fibermask else []),
             snr={b: (round(float(snr[b][i]), 2) if np.isfinite(snr[b][i]) else None) for b in sp.bands},
+            #- cameras with no unmasked pixels for this spectrum: [lo, hi, band]
+            masked_cams=[[float(sp.wave[b][0]), float(sp.wave[b][-1]), b] for b in bands
+                         if not np.any((sp.ivar[b][i] > 0) & ((sp.mask[b][i] == 0) if sp.mask is not None else True))],
         )
         if zcat is not None:
             zb = zcat[i]
