@@ -29,3 +29,16 @@ Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`.
   ~8.5x smaller than the Bokeh page for the same 20 spectra.
 * Trial-z model = pipeline model shifted in log λ (ignores resolution difference, fine for display).
 * VI stored in localStorage, exported as CSV.
+* Line markers (`v` key / toolbar "Full | Data | Model | Edge", hash `&ls=`), default **Data**:
+  SDSS-style short ticks, emission above / absorption below the plotted spectrum. The tick starts just
+  outside everything plotted at the line (flux, model, and the noise trace above only); the label is
+  also pushed clear of everything plotted under its full width, so labels never sit on noise spikes.
+  Same-name lines within 60 px share a bracketed label (doublets); any lines within 10 px merge
+  ("D2/D1", "K/H"). Colliding labels stack outward with longer leaders; peaks beyond the plot
+  edge get a short stub. "Model" anchors ticks at model ± 2.5σ (steadier but crosses noise when
+  unsmoothed); "Edge" puts ticks in strips at the plot top/bottom.
+* Line-marker colors (`V` key, hash `&lc=`): **ink** (default; emission ink, absorption dark gray),
+  plum (emission plum, absorption ink), crimson, violet (the original). The data are blue/orange, so
+  any green or violet marker collides with them for colour-blind readers (green vs orange model
+  ΔE≈1 protan; violet vs blue flux ΔE≈5 deutan); neutral ink is ≥25 ΔE from both in every CVD sim.
+  Ticks/labels start 8 px from the data (`&lg=` px to experiment) and ticks carry a surface halo.

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-lc="ink">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -40,6 +40,21 @@
   --l-em: #9085e9; --l-abs: #2fb383; --overlap: rgba(85,152,231,0.18);
   --good-ink: #0ca30c;
 }
+/* line-marker palettes (data-lc on <html>); default = ink */
+:root[data-lc="violet"] { --l-em: #6250d6; --l-abs: #1a9e6e; }
+:root[data-lc="ink"]    { --l-em: #262523; --l-abs: #5d5c58; }
+:root[data-lc="plum"]   { --l-em: #a3166f; --l-abs: #262523; }
+:root[data-lc="crimson"]{ --l-em: #b8203f; --l-abs: #262523; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-lc="violet"] { --l-em: #9085e9; --l-abs: #2fb383; }
+  :root:not([data-theme="light"])[data-lc="ink"]    { --l-em: #f0efec; --l-abs: #b5b3ab; }
+  :root:not([data-theme="light"])[data-lc="plum"]   { --l-em: #ff8fc8; --l-abs: #f0efec; }
+  :root:not([data-theme="light"])[data-lc="crimson"]{ --l-em: #ff8a9e; --l-abs: #f0efec; }
+}
+:root[data-theme="dark"][data-lc="violet"] { --l-em: #9085e9; --l-abs: #2fb383; }
+:root[data-theme="dark"][data-lc="ink"]    { --l-em: #f0efec; --l-abs: #b5b3ab; }
+:root[data-theme="dark"][data-lc="plum"]   { --l-em: #ff8fc8; --l-abs: #f0efec; }
+:root[data-theme="dark"][data-lc="crimson"]{ --l-em: #ff8a9e; --l-abs: #f0efec; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
@@ -263,6 +278,7 @@ table.mags td { padding: 2px; font-weight: 600; }
             <button class="toggle" data-k="em" aria-pressed="true" title="e"><i class="sw" style="background:var(--l-em)"></i>Emission</button>
             <button class="toggle" data-k="abs" aria-pressed="true" title="a"><i class="sw" style="background:var(--l-abs)"></i>Absorption</button>
             <button class="toggle" data-k="minor" aria-pressed="false" title="l">All lines</button>
+            <div class="seg" id="lstyle" title="Line marker style (v)"><button data-ls="full">Full</button><button data-ls="data">Data</button><button data-ls="model">Model</button><button data-ls="edge">Edge</button></div>
             <button class="toggle" data-k="overlap" aria-pressed="true" title="c"><i class="sw" style="background:var(--overlap);height:10px;width:12px;border-radius:2px"></i>Camera overlaps</button>
           </div>
           <div class="grp"><span class="lbl">Smooth σ</span>
@@ -331,6 +347,8 @@ table.mags td { padding: 2px; font-weight: 600; }
       <tr><td><kbd>f</kbd></td><td>toggle observed / rest frame</td></tr>
       <tr><td><kbd>m</kbd> <kbd>n</kbd></td><td>toggle model / noise</td></tr>
       <tr><td><kbd>e</kbd> <kbd>a</kbd> <kbd>l</kbd> <kbd>c</kbd></td><td>emission / absorption / all lines / camera overlaps</td></tr>
+      <tr><td><kbd>v</kbd></td><td>cycle line marker style: full / data / model / edge</td></tr>
+      <tr><td><kbd>V</kbd></td><td>cycle line marker colors: ink / plum / crimson / violet</td></tr>
       <tr><td><kbd>b</kbd> / <kbd>i</kbd></td><td>show / hide target list / info panel</td></tr>
       <tr><td><kbd>y</kbd></td><td>robust / full y-range</td></tr>
       <tr><td><kbd>r</kbd> or double-click</td><td>reset zoom</td></tr>
@@ -485,6 +503,9 @@ const VIKEY = "prospect2:vi:" + D.source;
 const S = {
   cur: 0, sigma: 0, rest: false, ymode: "robust", view: "inspect",
   show: { flux: true, model: true, noise: true, em: true, abs: true, minor: false, overlap: true },
+  lstyle: "data",            // line markers: full | data | model | edge
+  lcolor: "ink",             // line-marker palette (LCOLORS)
+  lgap: 8,                   // px between plotted data and tick / label
   z: {},                      // per-target working z
   vi: (() => { try { return JSON.parse(LS?.getItem(VIKEY) || "{}"); } catch (e) { return {}; } })(),
   order: T.map((_, i) => i),
@@ -588,6 +609,122 @@ function fitY(u) { if (u && u.scales.x.min != null) { u.series[0].min = u.scales
 function visibleLines() {
   return D.lines.filter(l => ((l.kind === "emi" && S.show.em) || (l.kind === "abs" && S.show.abs)) && (l.major || S.show.minor));
 }
+const LSTYLES = ["full", "data", "model", "edge"], LCOLORS = ["ink", "plum", "crimson", "violet"];
+function drawFullLines(u, ctx, lines, dpr) {
+  const { top, height } = u.bbox, X = v => u.valToPos(v, "x", true);
+  ctx.setLineDash([4 * dpr, 4 * dpr]); ctx.lineWidth = dpr;
+  ctx.font = `${11 * dpr}px ${css("--font")}`; ctx.textBaseline = "top";
+  const rowsEnd = [-1e9, -1e9, -1e9], lastX = {};
+  for (const l of lines) {
+    const px = X(l.x), col = css(l.kind === "emi" ? "--l-em" : "--l-abs");
+    ctx.strokeStyle = col; ctx.globalAlpha = l.major ? 0.75 : 0.4;
+    ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, top + height); ctx.stroke();
+    if (lastX[l.name] != null && px - lastX[l.name] < 40 * dpr) continue;   // doublets: label once
+    lastX[l.name] = px;
+    const w = ctx.measureText(l.name).width;
+    const r = rowsEnd.findIndex(e => e < px - 3 * dpr);
+    if (r < 0) continue;
+    rowsEnd[r] = px + w + 4 * dpr;
+    ctx.globalAlpha = 1; ctx.fillStyle = css("--surface"); ctx.fillRect(px + 2 * dpr, top + 3 * dpr + r * 14 * dpr, w + 2 * dpr, 13 * dpr);
+    ctx.fillStyle = col; ctx.fillText(l.name, px + 3 * dpr, top + 4 * dpr + r * 14 * dpr);
+  }
+  ctx.setLineDash([]);
+}
+
+// Extreme (max for dir<0 = emission/up, min for dir>0 = absorption/down) of the plotted series over
+// data pixels [i0, i1]; null if nothing plotted there.  The noise trace counts only above the data
+// (it can top the flux at the blue end); below, it always sits near 0 and would push every
+// absorption label to the bottom of the plot.
+function plottedExtreme(i0, i1, dir) {
+  const series = [S.show.flux && curData.f, S.show.model && curData.m, dir < 0 && S.show.noise && curData.n].filter(Boolean);
+  let ext = null;
+  for (const a of series) for (let j = Math.max(0, i0); j <= Math.min(NW - 1, i1); j++) {
+    const v = a[j]; if (!Number.isFinite(v)) continue;
+    if (ext === null || (dir < 0 ? v > ext : v < ext)) ext = v;
+  }
+  return ext;
+}
+// data-pixel half window around a line: >= ~2 screen px of data, the smoothing kernel, a narrow line width
+function lineHalfWindow(u) {
+  const xs = u.scales.x, pxPerData = u.bbox.width / Math.max(1, toIdx(xs.max) - toIdx(xs.min));
+  return Math.max(6, Math.ceil(2 / Math.max(pxPerData, 1e-3)), Math.ceil(2 * S.sigma));
+}
+// Where a tick starts, as a flux value (null = nothing plotted there).
+//   data : just outside everything plotted at the line -> the tick never touches drawn data
+//   model: model extremum at the line +/- 2.5 x local smoothed noise -> steadier vs noise spikes
+function lineAnchor(l, dir, u) {
+  const k = Math.round((l.wave * (1 + zcur(S.cur)) - D.wave0) / D.dwave), hw = lineHalfWindow(u);
+  if (S.lstyle === "model" && curData.m) {
+    let mext = null; const nv = [];
+    for (let j = Math.max(0, k - hw); j <= Math.min(NW - 1, k + hw); j++) {
+      const m = curData.m[j], n = curData.n[j];
+      if (Number.isFinite(m) && (mext === null || (dir < 0 ? m > mext : m < mext))) mext = m;
+      if (Number.isFinite(n)) nv.push(n);
+    }
+    if (mext !== null && nv.length) { nv.sort((a, b) => a - b); return mext - dir * 2.5 * nv[nv.length >> 1]; }
+  }
+  return plottedExtreme(k - hw, k + hw, dir);
+}
+function drawLineTicks(u, ctx, lines, dpr) {
+  const { top, height } = u.bbox, bot = top + height, X = v => u.valToPos(v, "x", true);
+  const fs = 11 * dpr, lh = fs + 3 * dpr, gap = S.lgap * dpr, tick = 14 * dpr, edge = 26 * dpr, halo = css("--surface");
+  ctx.font = `${fs}px ${css("--font")}`; ctx.setLineDash([]);
+  const placed = [];                                   // label boxes shared by both kinds
+  for (const kind of ["emi", "abs"]) {
+    const dir = kind === "emi" ? -1 : 1, col = css(kind === "emi" ? "--l-em" : "--l-abs");
+    // one label per name for lines closer than ~30 px (doublets, H&K, ...)
+    const groups = [];
+    for (const l of lines.filter(q => q.kind === kind)) {
+      const px = X(l.x), g = groups[groups.length - 1];
+      let ay;
+      if (S.lstyle === "edge") ay = dir < 0 ? top + edge : bot - edge;
+      else { const v = lineAnchor(l, dir, u); ay = v === null ? (dir < 0 ? top + edge : bot - edge) : u.valToPos(v, "y", true) + dir * gap; }
+      // same name within ~60 px (doublets) or any lines within ~10 px (Na D2/D1, Ca K/H when zoomed out)
+      if (g && px - g.xs[g.xs.length - 1] < (g.names.includes(l.name) ? 60 : 10) * dpr) {
+        g.xs.push(px); g.ays.push(ay); g.major ||= l.major; if (!g.names.includes(l.name)) g.names.push(l.name);
+      } else groups.push({ names: [l.name], xs: [px], ays: [ay], major: l.major });
+    }
+    for (const g of groups) {
+      g.name = g.names.join("/");
+      const w = ctx.measureText(g.name).width + 4 * dpr, { left: pl, width: pw } = u.bbox;   // keep labels inside the plot horizontally
+      const cx = Math.min(pl + pw - w / 2, Math.max(pl + w / 2, (g.xs[0] + g.xs[g.xs.length - 1]) / 2));
+      const ay = dir < 0 ? Math.min(...g.ays) : Math.max(...g.ays);        // outermost anchor of the group
+      let edgeY = ay + dir * tick;                       // label edge nearest the data
+      // keep the whole label clear of everything plotted beneath its width (noise spikes, model, ...)
+      const toI = cpx => toIdx(u.posToVal((cpx - u.bbox.left) / dpr, "x"));
+      const under = plottedExtreme(toI(cx - w / 2), toI(cx + w / 2), dir);
+      if (under !== null) { const uy = u.valToPos(under, "y", true) + dir * gap; edgeY = dir < 0 ? Math.min(edgeY, uy) : Math.max(edgeY, uy); }
+      const box = y => dir < 0 ? [y - lh, y] : [y, y + lh];
+      const hit = y => { const [y0, y1] = box(y); return placed.some(b => cx - w / 2 < b.x1 && cx + w / 2 > b.x0 && y0 < b.y1 && y1 > b.y0); };
+      let tries = 0;
+      while (hit(edgeY) && tries++ < 4) edgeY += dir * lh;              // stack outward, longer leader
+      // keep the label inside the plot; if the data reach the edge, the tick points back at it
+      const lim = dir < 0 ? top + 2 * dpr + lh : bot - 2 * dpr - lh;
+      let clamped = false;
+      if (dir < 0 ? edgeY < lim : edgeY > lim) { edgeY = lim; clamped = true; }
+      const showLabel = !hit(edgeY);
+      const path = () => {
+        ctx.beginPath();
+        for (let q = 0; q < g.xs.length; q++) {
+          let y0 = g.ays[q], y1 = edgeY;                 // y0 = data end, y1 = label end
+          if (clamped && (dir < 0 ? y0 < y1 + 6 * dpr : y0 > y1 - 6 * dpr)) y0 = y1 - dir * 8 * dpr;   // data beyond edge: short stub
+          ctx.moveTo(g.xs[q], y0); ctx.lineTo(g.xs[q], y1);
+        }
+        if (g.xs.length > 1) { ctx.moveTo(g.xs[0], edgeY); ctx.lineTo(g.xs[g.xs.length - 1], edgeY); }
+      };
+      // surface-colored halo keeps the tick legible where it passes near data
+      ctx.globalAlpha = 0.85; ctx.strokeStyle = halo; ctx.lineWidth = 4 * dpr; ctx.lineCap = "butt"; path(); ctx.stroke();
+      ctx.strokeStyle = col; ctx.globalAlpha = g.major ? 0.95 : 0.55; ctx.lineWidth = 1.25 * dpr; path(); ctx.stroke();
+      if (!showLabel) continue;
+      const [y0, y1] = box(edgeY); placed.push({ x0: cx - w / 2, x1: cx + w / 2, y0, y1 });
+      ctx.globalAlpha = 1; ctx.textAlign = "center"; ctx.textBaseline = dir < 0 ? "bottom" : "top";
+      const ty = edgeY + dir * 2 * dpr;
+      ctx.lineJoin = "round"; ctx.lineWidth = 3 * dpr; ctx.strokeStyle = css("--surface"); ctx.strokeText(g.name, cx, ty);
+      ctx.fillStyle = col; ctx.globalAlpha = g.major ? 1 : 0.7; ctx.fillText(g.name, cx, ty);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
 function drawOverlays(u, layer) {
   const ctx = u.ctx, { left, top, width, height } = u.bbox, dpr = devicePixelRatio || 1, zz = zcur(S.cur);
   const xmin = u.scales.x.min, xmax = u.scales.x.max;
@@ -604,22 +741,7 @@ function drawOverlays(u, layer) {
   }
   if (layer === "over") {
     const lines = visibleLines().map(l => ({ ...l, x: S.rest ? l.wave : l.wave * (1 + zz) })).filter(l => l.x >= xmin && l.x <= xmax).sort((a, b) => a.x - b.x);
-    ctx.setLineDash([4 * dpr, 4 * dpr]); ctx.lineWidth = dpr;
-    ctx.font = `${11 * dpr}px ${css("--font")}`; ctx.textBaseline = "top";
-    const rowsEnd = [-1e9, -1e9, -1e9], lastX = {};
-    for (const l of lines) {
-      const px = X(l.x), col = css(l.kind === "emi" ? "--l-em" : "--l-abs");
-      ctx.strokeStyle = col; ctx.globalAlpha = l.major ? 0.75 : 0.4;
-      ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, top + height); ctx.stroke();
-      if (lastX[l.name] != null && px - lastX[l.name] < 40 * dpr) continue;   // doublets: label once
-      lastX[l.name] = px;
-      const w = ctx.measureText(l.name).width;
-      const r = rowsEnd.findIndex(e => e < px - 3 * dpr);
-      if (r < 0) continue;
-      rowsEnd[r] = px + w + 4 * dpr;
-      ctx.globalAlpha = 1; ctx.fillStyle = css("--surface"); ctx.fillRect(px + 2 * dpr, top + 3 * dpr + r * 14 * dpr, w + 2 * dpr, 13 * dpr);
-      ctx.fillStyle = col; ctx.fillText(l.name, px + 3 * dpr, top + 4 * dpr + r * 14 * dpr);
-    }
+    if (S.lstyle === "full") drawFullLines(u, ctx, lines, dpr); else drawLineTicks(u, ctx, lines, dpr);
   }
   ctx.restore();
 }
@@ -928,6 +1050,15 @@ function setSidebar(side, show) {
 }
 $("b-left").onclick = () => setSidebar("left"); $("b-right").onclick = () => setSidebar("right");
 try { if (LS?.getItem("prospect2:hide-left")) setSidebar("left", false); if (LS?.getItem("prospect2:hide-right")) setSidebar("right", false); } catch (e) {}
+function setLColor(c, redraw = true) {
+  S.lcolor = c; document.documentElement.setAttribute("data-lc", c);
+  if (redraw && U) { U.redraw(false); renderPanels(); }
+}
+function setLStyle(st, redraw = true) {
+  S.lstyle = st; $("lstyle").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.ls === st));
+  if (redraw && U) U.redraw(false);
+}
+$("lstyle").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setLStyle(b.dataset.ls); });
 $("b-help").onclick = () => $("help").hidden = false;
 $("help").onclick = e => { if (e.target.id === "help") $("help").hidden = true; };
 
@@ -946,6 +1077,8 @@ document.addEventListener("keydown", e => {
     S: () => setSmooth(SMOOTHS[Math.max(0, SMOOTHS.indexOf(S.sigma) - 1)]),
     "[": () => nudge(-1), "]": () => nudge(1), "{": () => nudge(-10), "}": () => nudge(10), p: () => setZ(zpipe(S.cur)),
     f: () => setFrame(!S.rest), m: () => toggle("model"), n: () => toggle("noise"), e: () => toggle("em"), a: () => toggle("abs"),
+    v: () => setLStyle(LSTYLES[(LSTYLES.indexOf(S.lstyle) + 1) % LSTYLES.length]),
+    V: () => setLColor(LCOLORS[(LCOLORS.indexOf(S.lcolor) + 1) % LCOLORS.length]),
     l: () => toggle("minor"), c: () => toggle("overlap"), y: () => setYMode(S.ymode === "robust" ? "full" : "robust"),
     r: () => { U.setScale("x", { min: U.data[0][0], max: U.data[0][NW - 1] }); },
     0: () => setVI({ q: 0 }), 1: () => setVI({ q: 1 }), 2: () => setVI({ q: 2 }), 3: () => setVI({ q: 3 }), 4: () => setVI({ q: 4 }),
@@ -960,6 +1093,10 @@ document.addEventListener("keydown", e => {
   if (MODEL) MHIDE = fillMaskedModel(MODEL, FLUX);
   const hp = new URLSearchParams(location.hash.slice(1));
   if (hp.get("theme")) document.documentElement.setAttribute("data-theme", hp.get("theme"));
+  if (LSTYLES.includes(hp.get("ls"))) S.lstyle = hp.get("ls");
+  setLStyle(S.lstyle, false);
+  setLColor(LCOLORS.includes(hp.get("lc")) ? hp.get("lc") : S.lcolor, false);
+  if (hp.get("lg")) S.lgap = +hp.get("lg");
   if (hp.get("s")) { S.sigma = +hp.get("s"); $("smooth").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", +b.dataset.s === S.sigma)); }
   rebuildOrder();
   select(hp.get("i") ? Math.min(+hp.get("i"), T.length - 1) : 0);
