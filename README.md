@@ -1,7 +1,7 @@
 # prospect2 prototype
 
 ```
-python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits -o alt/prospect2_example.html -f 2000-2020
+python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits -o alt/prospect2_example.html -f 2000:2020
 ```
 
 | file | spectra | size |
@@ -10,7 +10,12 @@ python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits -o alt/prosp
 | `prospect2_example.html` | 20 | 0.55 MB, fully offline |
 | `prospect2_petal4_all500.html` | 500 | 10.6 MB, fully offline (12.2 MB with `--model-precision 1000`) |
 
-Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`.
+Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`, `&q=<filter>`.
+
+Fiber/TARGETID lists, same syntax in `-f` and in the page's filter box: `10,20,30-40,50:60` =
+fibers 10, 20, 30–40 (inclusive), 50–59 (python-style). In the filter box, integers ≥ 5000 or
+negative are TARGETIDs (exact match, or partial match for a single number); terms separated by
+spaces must all match (`2030-2040 ELG z>1.2`). `-f` and `-t` together select the union.
 
 ## Architecture
 

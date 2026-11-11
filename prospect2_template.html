@@ -243,7 +243,7 @@ table.mags td { padding: 2px; font-weight: 600; }
 <div class="app" id="app">
   <aside>
     <div class="filters">
-      <input type="search" id="q" placeholder="Filter: targetid, fiber, ELG, QSO, z>1.5 …" title="Press / to focus">
+      <input type="search" id="q" placeholder="Filter: 10,30-40,50:60 · targetids · ELG · z>1.5 …" title="Press / to focus">
       <div class="row">
         <label><input type="checkbox" id="f-zwarn"> ZWARN≠0</label>
         <label title="hide sky fibers and unassigned positioners"><input type="checkbox" id="f-nosky"> hide sky</label>
@@ -354,7 +354,9 @@ table.mags td { padding: 2px; font-weight: 600; }
       <tr><td><kbd>y</kbd></td><td>robust / full y-range</td></tr>
       <tr><td><kbd>r</kbd> or double-click</td><td>reset zoom</td></tr>
       <tr><td><kbd>0</kbd>–<kbd>4</kbd></td><td>set VI quality (4 = confident … 0 = no info)</td></tr>
-      <tr><td><kbd>/</kbd></td><td>focus filter box (supports <code>z&gt;1.5</code>, <code>dchi2&lt;25</code>, <code>ELG</code>, fiber or TARGETID)</td></tr>
+      <tr><td><kbd>/</kbd></td><td>focus filter box. Space-separated terms must all match: <code>z&gt;1.5</code>, <code>dchi2&lt;25</code>, <code>ELG</code>, <code>nodata</code>,
+        fibers <code>10,20,30-40,50:60</code> (<code>a-b</code> inclusive, <code>a:b</code> excludes b), TARGETIDs <code>3962…,3962…</code>.
+        Deep link: <code>#q=…</code></td></tr>
       <tr><td><kbd>?</kbd> / <kbd>Esc</kbd></td><td>show / hide this help</td></tr>
     </table>
   </div>
@@ -540,9 +542,34 @@ const badges = (t, n = 3) => label(t).slice(0, n).map(b => `<span class="badge${
 const medSNR = t => { const v = Object.values(t.snr).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b) / v.length : 0; };
 
 /* ================= filtering / list ================= */
+// Fiber / TARGETID lists: "10,20,30-40,50:60" = fibers 10, 20, 30..40 (inclusive), 50..59 (python-style).
+// Integers >= MAXFIBER (or negative) are TARGETIDs, compared exactly as strings (int64 > 2^53).
+const MAXFIBER = 5000;
+function parseIdList(tok) {
+  if (!/^-?\d+([-:]\d+)?(,-?\d+([-:]\d+)?)*,?$/.test(tok)) return null;
+  const fibers = [], tids = new Set();
+  for (const part of tok.split(",").filter(Boolean)) {
+    const m = part.match(/^(\d+)([-:])(\d+)$/);
+    if (m) {                                             // fiber range
+      const a = +m[1], b = m[2] === ":" ? +m[3] - 1 : +m[3];
+      if (a >= MAXFIBER || b >= MAXFIBER) return null;
+      fibers.push([a, b]);
+    } else if (part.startsWith("-") || +part >= MAXFIBER) tids.add(BigInt(part).toString());
+    else fibers.push([+part, +part]);
+  }
+  return { fibers, tids, list: tok.includes(",") || /\d[-:]\d/.test(tok) };
+}
 function matches(t, q) {
   if (!q) return true;
+  q = q.replace(/\s*,\s*/g, ",").replace(/(\d)\s*:\s*(\d)/g, "$1:$2");     // "10, 20" / "50 : 60" are one token
   return q.split(/\s+/).filter(Boolean).every(tok => {
+    const ids = parseIdList(tok);
+    if (ids && (ids.list || ids.tids.size || ids.fibers.length)) {
+      if (ids.tids.has(t.targetid)) return true;
+      if (ids.fibers.some(([a, b]) => t.fiber >= a && t.fiber <= b)) return true;
+      // a single long number that is not an exact TARGETID still works as a partial TARGETID search
+      return !ids.list && ids.tids.size === 1 && !ids.fibers.length && t.targetid.includes(tok);
+    }
     const m = tok.match(/^(z|dchi2|fiber|snr|zwarn)\s*(<=|>=|<|>|=)\s*([-\d.e]+)$/i);
     if (m) {
       const v = { z: zval(t), dchi2: dchi2val(t), fiber: t.fiber, snr: medSNR(t), zwarn: t.zwarn }[m[1].toLowerCase()], x = +m[3];
@@ -563,6 +590,7 @@ function rebuildOrder() {
   o.sort((a, b) => kf(a) - kf(b));
   S.order = o;
   renderList(); if (S.view === "grid") renderGallery();
+  if (FLUX) writeHash();
 }
 function renderList() {
   const L = $("list");
@@ -800,10 +828,7 @@ function drawOverlays(u, layer) {
     ctx.font = `600 ${11 * dpr}px ${css("--font")}`; ctx.textAlign = "center"; ctx.textBaseline = "top";
     const w = Math.max(ctx.measureText(msg).width, sub ? ctx.measureText(sub).width : 0) + 12 * dpr, h = (sub ? 30 : 17) * dpr;
     const cx = Math.min(xb - w / 2, Math.max(xa + w / 2, (xa + xb) / 2)), y0 = top + height - h - 18 * dpr;
-    ctx.fillStyle = css("--surface"); ctx.globalAlpha = 0.92; ctx.fillRect(cx - w / 2, y0, w, h); ctx.globalAlpha = 1;
-    ctx.fillStyle = css("--ink-2"); ctx.fillText(msg, cx, y0 + 3 * dpr);
-    if (sub) { ctx.font = `${10 * dpr}px ${css("--font")}`; ctx.fillStyle = css("--muted"); ctx.fillText(sub, cx, y0 + 17 * dpr); }
-    RESERVED.push({ x0: cx - w / 2, x1: cx + w / 2, y0, y1: y0 + h });
+    RESERVED.push({ x0: cx - w / 2, x1: cx + w / 2, y0, y1: y0 + h, msg, cx });   // drawn in the "over" layer (above the grid)
   }
   if (layer === "under" && S.show.overlap) {
     ctx.font = `${10 * dpr}px ${css("--font")}`; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
@@ -814,8 +839,14 @@ function drawOverlays(u, layer) {
     }
   }
   if (layer === "over") {
-    const lines = visibleLines().map(l => ({ ...l, x: S.rest ? l.wave : l.wave * (1 + zz) })).filter(l => l.x >= xmin && l.x <= xmax).sort((a, b) => a.x - b.x);
+    const gm = ghostMask(S.cur), inMasked = l => gm && gm[Math.round((l.wave * (1 + zz) - D.wave0) / D.dwave)];   // no markers in a masked camera
+    const lines = visibleLines().map(l => ({ ...l, x: S.rest ? l.wave : l.wave * (1 + zz) })).filter(l => l.x >= xmin && l.x <= xmax && !inMasked(l)).sort((a, b) => a.x - b.x);
     if (S.lstyle === "full") drawFullLines(u, ctx, lines, dpr); else drawLineTicks(u, ctx, lines, dpr);
+    for (const r of RESERVED) {                         // masked-camera labels
+      ctx.fillStyle = css("--surface"); ctx.globalAlpha = 0.92; ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); ctx.globalAlpha = 1;
+      ctx.font = `600 ${11 * dpr}px ${css("--font")}`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+      ctx.fillStyle = css("--ink-2"); ctx.fillText(r.msg, r.cx, r.y0 + 3 * dpr);
+    }
   }
   ctx.restore();
 }
@@ -1099,10 +1130,14 @@ document.querySelectorAll("[data-dz]").forEach(b => b.onclick = () => nudge(+b.d
 $("zin").addEventListener("change", e => setZ(parseFloat(e.target.value)));
 $("zreset").onclick = () => setZ(zpipe(S.cur));
 
+function writeHash() {           // keep the deep link current: target, smoothing, filter
+  const q = $("q").value.trim();
+  history.replaceState(null, "", `#i=${S.cur}${S.sigma ? "&s=" + S.sigma : ""}${q ? "&q=" + encodeURIComponent(q) : ""}`);
+}
 function select(i) {
   if (i == null || i < 0 || i >= T.length) return;
   S.cur = i;
-  history.replaceState(null, "", `#i=${i}${S.sigma ? "&s=" + S.sigma : ""}`);
+  writeHash();
   if (U) refreshPlot(true); else makePlot();
   renderInfo(); renderPanels(); renderList();
   document.querySelectorAll(".gcard").forEach(c => c.classList.toggle("sel", +c.dataset.i === i));
@@ -1190,6 +1225,7 @@ document.addEventListener("keydown", e => {
   rebuildOrder();
   select(hp.get("i") ? Math.min(+hp.get("i"), T.length - 1) : 0);
   if (hp.get("view") === "grid") setView("grid");
+  if (hp.get("q")) { $("q").value = hp.get("q"); rebuildOrder(); if (S.order.length && !S.order.includes(S.cur)) select(S.order[0]); }
 })();
 </script>
 </body>

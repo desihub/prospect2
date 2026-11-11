@@ -19,7 +19,6 @@ from astropy.io import fits
 
 from desispec.io import read_spectra
 from desispec.io.util import checkgzip
-from desispec.util import parse_fibers
 from desispec.coaddition import coadd_cameras
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -117,6 +116,24 @@ def merge_camera_models(sp, models, wave):
     return np.where(den > 0, num / np.where(den > 0, den, 1), msum / np.maximum(cnt, 1))
 
 
+def parse_fiberlist(spec):
+    """
+    "10,20,30-40,50:60" -> [10, 20, 30..40, 50..59]: "a-b" is inclusive,
+    "a:b" is python-style (excludes b).  Same syntax as the viewer's filter box.
+    """
+    fibers = []
+    for part in spec.replace(' ', '').split(','):
+        if not part:
+            continue
+        if ':' in part:
+            a, b = part.split(':'); fibers.extend(range(int(a), int(b)))
+        elif '-' in part[1:]:
+            a, b = part.split('-'); fibers.extend(range(int(a), int(b) + 1))
+        else:
+            fibers.append(int(part))
+    return np.array(fibers, dtype=int)
+
+
 def air_to_vac(air):
     s2 = (1e4 / air) ** 2
     n = 1 + 8.336624212083e-5 + 2.408926869968e-2 / (1.301065924522e2 - s2) \
@@ -168,8 +185,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('-i', '--infile', required=True, help='input coadd/spectra file')
     p.add_argument('-o', '--outfile', required=True, help='output html file')
-    p.add_argument('-f', '--fibers', help='fibers a-b (Python-style exclusive of b)')
-    p.add_argument('-t', '--targetids', help='comma-separated TARGETIDs')
+    p.add_argument('-f', '--fibers', help='fibers, e.g. 10,20,30-40,50:60 (a-b inclusive, a:b excludes b)')
+    p.add_argument('-t', '--targetids', help='comma-separated TARGETIDs (combined with -f as a union)')
     p.add_argument('--title', default=None)
     p.add_argument('--model-precision', type=float, default=100,
                    help='store the model in steps of (median data noise)/N; default %(default)s. '
@@ -186,11 +203,12 @@ def main():
         zcat = Table.read(rrfile, 'REDSHIFTS')
         zcat.meta.update(fits.getheader(rrfile, 0))
 
-    keep = np.ones(sp.num_spectra(), dtype=bool)
+    #- -f and -t select the union of the listed fibers and TARGETIDs (all spectra if neither)
+    keep = np.zeros(sp.num_spectra(), dtype=bool) if (args.fibers or args.targetids) else np.ones(sp.num_spectra(), dtype=bool)
     if args.fibers:
-        keep &= np.isin(sp.fibermap['FIBER'], parse_fibers(args.fibers))
+        keep |= np.isin(sp.fibermap['FIBER'], parse_fiberlist(args.fibers))
     if args.targetids:
-        keep &= np.isin(sp.fibermap['TARGETID'], [int(t) for t in args.targetids.split(',')])
+        keep |= np.isin(sp.fibermap['TARGETID'], [int(t) for t in args.targetids.replace(' ', '').split(',') if t])
     sp = sp[keep]
     if zcat is not None:
         zcat = zcat[keep]
