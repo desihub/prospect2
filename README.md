@@ -17,6 +17,11 @@ fibers 10, 20, 30–40 (inclusive), 50–59 (python-style). In the filter box, i
 negative are TARGETIDs (exact match, or partial match for a single number); terms separated by
 spaces must all match (`2030-2040 ELG z>1.2`). `-f` and `-t` together select the union.
 
+Dependencies: numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
+optionally desitarget for target-bit names. No dependency on prospect: the line lists
+(`data/{emission,absorption}_lines.txt`) and `load_redrock_templates` were copied from it.
+License: BSD 3-clause (`LICENSE.rst`), same as prospect.
+
 ## Architecture
 
 * Python (`make_prospect2.py`) builds a JSON payload; the HTML template (`prospect2_template.html`)

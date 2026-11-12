@@ -9,7 +9,7 @@ data payload.  No Bokeh, no server, works offline.
 
 Usage:
     python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits \
-        -o alt/prospect2_example.html -f 2000-2020
+        -o alt/prospect2_example.html -f 2000:2020
 """
 
 import os, sys, json, gzip, base64, argparse, warnings
@@ -79,7 +79,6 @@ def camera_models(sp, zcat):
     """
     from numpy.ma.core import MaskedConstant
     from desispec.interpolation import resample_flux
-    from prospect.utilities import load_redrock_templates
     hdr = zcat.meta if 'TEMNAM00' in zcat.meta else None
     templates = load_redrock_templates(zcat_header=hdr)
     out = {b: np.zeros(sp.flux[b].shape) for b in sp.bands}
@@ -95,6 +94,21 @@ def camera_models(sp, zcat):
             mx = resample_flux(sp.wave[b], tx.wave * (1 + zb['Z']), restmodel)
             out[b][i] = sp.R[b][i].dot(mx)
     return out
+
+
+def load_redrock_templates(template_dir=None, zcat_header=None):
+    """
+    Load redrock templates as a dict keyed by (SPECTYPE, SUBTYPE), silencing
+    redrock's stdout.  If zcat_header has TEMNAMnn/TEMVERnn keywords, load the
+    template versions used for the fit.  (From prospect.utilities.)
+    """
+    import contextlib
+    import redrock.templates
+    with open(os.devnull, 'w') as devnull, contextlib.redirect_stdout(devnull):
+        if zcat_header is not None:
+            return redrock.templates.load_templates_from_header(
+                zcat_header, template_dir=template_dir, asdict=True)
+        return redrock.templates.load_templates(template_dir, asdict=True)
 
 
 def merge_camera_models(sp, models, wave):
@@ -142,10 +156,9 @@ def air_to_vac(air):
 
 
 def read_lines():
-    import prospect
     lines = []
     for kind in ('emission', 'absorption'):
-        fn = os.path.join(os.path.dirname(prospect.__file__), 'data', f'{kind}_lines.txt')
+        fn = os.path.join(HERE, 'data', f'{kind}_lines.txt')
         for row in open(fn, encoding='utf-8'):
             if row.startswith('#') or not row.strip():
                 continue
