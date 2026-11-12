@@ -26,8 +26,13 @@ License: BSD 3-clause (`LICENSE.rst`), same as prospect.
 
 * Python (`make_prospect2.py`) builds a JSON payload; the HTML template (`prospect2_template.html`)
   is a small hand-written JS app plus inlined uPlot (50 KB, `vendor/`). No Bokeh, no server.
-* Cameras merged with `desispec.coaddition.coadd_cameras`. The redrock model is computed per camera
-  (`camera_models`) and merged with the same ivar weights as the flux (`merge_camera_models`).
+* Cameras merged with `desispec.coaddition.coadd_cameras`. Per-camera redrock models come from the
+  matching `rrmodel*.fits` (`redrock-X.fits` → `rrmodel-X.fits`, rows matched by TARGETID, wavelength
+  grids checked) if present, else are computed from templates + COEFF (`camera_models`; forced with
+  `--no-rrmodel`). Either way they're merged with the same ivar weights as the flux
+  (`merge_camera_models`). The two agree except within ~5 px of masked pixels, where the rrmodel
+  sags toward 0 (e.g. fiber 2183 z, pix 809: rrmodel 22.1, computed 29.6, data 29.4), as if the
+  masked pixels were zeroed before the resolution convolution.
   prospect's `create_model` hard-cuts at mid-overlap, giving model=0 where that camera is masked
   but the other camera has good data (e.g. fiber 2208 at 7537.6 Å).
 * **Data encoding ("q1")**: noise as 1%-step log, delta-coded int16; flux quantized at 0.1σ

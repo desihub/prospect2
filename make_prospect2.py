@@ -96,6 +96,45 @@ def camera_models(sp, zcat):
     return out
 
 
+def find_file(filename):
+    """filename or filename(.gz) if it exists, else None"""
+    try:
+        return checkgzip(filename)
+    except (FileNotFoundError, IOError):
+        return None
+
+
+def read_rrmodel(rrmodel_file, sp):
+    """
+    Read per-camera redrock models {band: [nspec, nwave_band]} from an rrmodel
+    file (REDSHIFTS + {B,R,Z}_WAVELENGTH + {B,R,Z}_MODEL HDUs), matched to the
+    rows of sp by TARGETID.  Returns None, with a warning, if the file doesn't
+    cover every spectrum and camera on the same wavelength grids.
+    """
+    with fits.open(rrmodel_file, memmap=True) as hx:
+        names = {h.name for h in hx}
+        tids = np.asarray(hx['REDSHIFTS'].data['TARGETID'])
+        row = {t: i for i, t in enumerate(tids)}
+        want = np.asarray(sp.fibermap['TARGETID'])
+        missing = [t for t in want if t not in row]
+        if missing:
+            print(f'WARNING: {len(missing)} TARGETIDs not in {rrmodel_file}; computing models instead')
+            return None
+        idx = np.array([row[t] for t in want])
+        out = {}
+        for b in sp.bands:
+            B = b.upper()
+            if f'{B}_MODEL' not in names or f'{B}_WAVELENGTH' not in names:
+                print(f'WARNING: no {B}_MODEL in {rrmodel_file}; computing models instead')
+                return None
+            w = hx[f'{B}_WAVELENGTH'].data
+            if len(w) != len(sp.wave[b]) or not np.allclose(w, sp.wave[b]):
+                print(f'WARNING: {B}_WAVELENGTH in {rrmodel_file} differs from spectra; computing models instead')
+                return None
+            out[b] = hx[f'{B}_MODEL'].data[idx].astype(np.float64)
+    return out
+
+
 def load_redrock_templates(template_dir=None, zcat_header=None):
     """
     Load redrock templates as a dict keyed by (SPECTYPE, SUBTYPE), silencing
@@ -201,6 +240,8 @@ def main():
     p.add_argument('-f', '--fibers', help='fibers, e.g. 10,20,30-40,50:60 (a-b inclusive, a:b excludes b)')
     p.add_argument('-t', '--targetids', help='comma-separated TARGETIDs (combined with -f as a union)')
     p.add_argument('--title', default=None)
+    p.add_argument('--no-rrmodel', action='store_true',
+                   help='ignore any rrmodel*.fits file; compute models from redrock templates + COEFF')
     p.add_argument('--model-precision', type=float, default=100,
                    help='store the model in steps of (median data noise)/N; default %(default)s. '
                         '1000 is visually lossless even zoomed+smoothed (~+1.6 MB per 500 spectra)')
@@ -210,11 +251,15 @@ def main():
 
     basedir, basefile = os.path.split(args.infile)
     rrfile = basefile.replace('coadd', 'redrock').replace('spectra', 'redrock')
-    rrfile = checkgzip(os.path.join(basedir, rrfile))
+    rrfile = find_file(os.path.join(basedir, rrfile))
     zcat = None
-    if rrfile and os.path.exists(rrfile):
+    rrmodel_file = None
+    if rrfile:
         zcat = Table.read(rrfile, 'REDSHIFTS')
         zcat.meta.update(fits.getheader(rrfile, 0))
+        rrdir, rrbase = os.path.split(rrfile)
+        if not args.no_rrmodel and rrbase.startswith('redrock'):
+            rrmodel_file = find_file(os.path.join(rrdir, 'rrmodel' + rrbase[len('redrock'):]))
 
     #- -f and -t select the union of the listed fibers and TARGETIDs (all spectra if neither)
     keep = np.zeros(sp.num_spectra(), dtype=bool) if (args.fibers or args.targetids) else np.ones(sp.num_spectra(), dtype=bool)
@@ -244,8 +289,16 @@ def main():
 
     #- Redrock model on per-camera grids, then merged
     model = None
+    model_source = None
     if zcat is not None:
-        cam_models = camera_models(sp, zcat)
+        cam_models = read_rrmodel(rrmodel_file, sp) if rrmodel_file else None
+        if cam_models is not None:
+            model_source = os.path.basename(rrmodel_file)
+            print(f'INFO: redrock models read from {rrmodel_file}')
+        else:
+            cam_models = camera_models(sp, zcat)
+            model_source = 'redrock templates + COEFF'
+            print('INFO: redrock models computed from templates + COEFF')
 
     #- Merge cameras onto a single linear grid
     sp_all = coadd_cameras(sp)
@@ -309,6 +362,7 @@ def main():
         title=args.title or f'{basefile}',
         source=basefile,
         redrock=os.path.basename(rrfile) if zcat is not None else None,
+        model_source=model_source,
         wave0=float(wave[0]), dwave=float(dw[0]), nwave=len(wave), nspec=sp.num_spectra(),
         flux_unit='1e-17 erg/s/cm²/Å',
         targets=targets,
