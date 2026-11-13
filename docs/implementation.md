@@ -145,8 +145,12 @@ TARGETID (stuck sky fibers).
   jumps there.
 - The legend is replaced by a hover readout under the plot. Both sidebars are collapsible (`b`/`i`)
   and the choice is remembered in localStorage.
-- Filter syntax: `z>1.5 dchi2<25 ELG nodata unassigned 2030-2040`. Space-separated terms must all
-  match.
+- Filter syntax: `z>1.5 0.79<z<0.81 dchi2<25 ELG !QSO nodata unassigned 2030-2040`.
+  Whitespace-separated terms must all match (AND); `!` negates a term. By user choice (2026-11-13),
+  terms never contain spaces: `z > 1.5` is not supported and fiber lists must be written without
+  spaces (`10,20`, not `10, 20`), so tokenizing is a plain whitespace split. Terms that contain
+  `<`, `>` or `=` but don't parse as a comparison are listed in red under the box and ignored
+  (not treated as "match nothing"). Commas only join fiber/TARGETID lists, not terms.
 - Deep links: `#i=7&s=3&view=grid&theme=dark&q=<filter>&ls=&lc=&lg=`. The hash is kept current
   on select and filter.
 - VI (visual inspection, quality 0–4) is stored in localStorage keyed by source file and exported

@@ -14,8 +14,14 @@ Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`, `
 
 Fiber/TARGETID lists, same syntax in `-f` and in the page's filter box: `10,20,30-40,50:60` =
 fibers 10, 20, 30–40 (inclusive), 50–59 (python-style). In the filter box, integers ≥ 5000 or
-negative are TARGETIDs (exact match, or partial match for a single number); terms separated by
-spaces must all match (`2030-2040 ELG z>1.2`). `-f` and `-t` together select the union.
+negative are TARGETIDs (exact match, or partial match for a single number). `-f` and `-t` together
+select the union.
+
+Filter box: whitespace-separated terms, all of which must match (`2030-2040 ELG 0.79<z<0.81 !QSO`).
+A term is a comparison on `z`, `dchi2`, `fiber`, `snr` or `zwarn` (`z>1.2`, `1.2<=z`, `0.79<z<0.81`),
+a fiber/TARGETID list (no spaces inside it), or a case-insensitive text match on the target's labels
+(`ELG`, `GALAXY`, `nodata`, `unassigned`). Prefix `!` negates a term. Terms must not contain spaces
+(`z > 1.2` doesn't work). Terms that can't be parsed are shown in red under the box and ignored.
 
 Dependencies: numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
 optionally desitarget for target-bit names. No dependency on prospect: the line lists

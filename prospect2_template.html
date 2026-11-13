@@ -95,6 +95,8 @@ main { padding: 12px 16px 24px; }
 /* ---------- sidebar list ---------- */
 .filters { padding: 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
 .filters input[type=search] { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raise); }
+.filters input[type=search].bad { border-color: var(--bad); outline-color: var(--bad); }
+.filters .qerr { color: var(--bad); font-size: 12px; margin-top: -4px; overflow-wrap: anywhere; }
 .filters label { color: var(--ink-2); display: flex; gap: 6px; align-items: center; }
 .filters .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .filters select { padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--raise); }
@@ -243,7 +245,8 @@ table.mags td { padding: 2px; font-weight: 600; }
 <div class="app" id="app">
   <aside>
     <div class="filters">
-      <input type="search" id="q" placeholder="Filter: 10,30-40,50:60 · targetids · ELG · z>1.5 …" title="Press / to focus">
+      <input type="search" id="q" placeholder="Filter: 10,30-40 · ELG · 0.8<z<1.2 · !QSO …" title="Press / to focus">
+      <div id="qerr" class="qerr" hidden></div>
       <div class="row">
         <label><input type="checkbox" id="f-zwarn"> ZWARN≠0</label>
         <label title="hide sky fibers and unassigned positioners"><input type="checkbox" id="f-nosky"> hide sky</label>
@@ -354,7 +357,7 @@ table.mags td { padding: 2px; font-weight: 600; }
       <tr><td><kbd>y</kbd></td><td>robust / full y-range</td></tr>
       <tr><td><kbd>r</kbd> or double-click</td><td>reset zoom</td></tr>
       <tr><td><kbd>0</kbd>–<kbd>4</kbd></td><td>set VI quality (4 = confident … 0 = no info)</td></tr>
-      <tr><td><kbd>/</kbd></td><td>focus filter box. Space-separated terms must all match: <code>z&gt;1.5</code>, <code>dchi2&lt;25</code>, <code>ELG</code>, <code>nodata</code>,
+      <tr><td><kbd>/</kbd></td><td>focus filter box. Space-separated terms must all match: <code>z&gt;1.5</code>, <code>0.79&lt;z&lt;0.81</code>, <code>dchi2&lt;25</code>, <code>ELG</code>, <code>nodata</code>, <code>!QSO</code> (not),
         fibers <code>10,20,30-40,50:60</code> (<code>a-b</code> inclusive, <code>a:b</code> excludes b), TARGETIDs <code>3962…,3962…</code>.
         Deep link: <code>#q=…</code></td></tr>
       <tr><td><kbd>?</kbd> / <kbd>Esc</kbd></td><td>show / hide this help</td></tr>
@@ -559,31 +562,51 @@ function parseIdList(tok) {
   }
   return { fibers, tids, list: tok.includes(",") || /\d[-:]\d/.test(tok) };
 }
-function matches(t, q) {
-  if (!q) return true;
-  q = q.replace(/\s*,\s*/g, ",").replace(/(\d)\s*:\s*(\d)/g, "$1:$2");     // "10, 20" / "50 : 60" are one token
-  return q.split(/\s+/).filter(Boolean).every(tok => {
-    const ids = parseIdList(tok);
-    if (ids && (ids.list || ids.tids.size || ids.fibers.length)) {
-      if (ids.tids.has(t.targetid)) return true;
-      if (ids.fibers.some(([a, b]) => t.fiber >= a && t.fiber <= b)) return true;
-      // a single long number that is not an exact TARGETID still works as a partial TARGETID search
-      return !ids.list && ids.tids.size === 1 && !ids.fibers.length && t.targetid.includes(tok);
+// Filter query: whitespace-separated terms, all must match.  A term is one of
+//   z>1.5  0.79<z<0.81  1.2<=z   (fields z dchi2 fiber snr zwarn; ops < > <= >= =; no spaces inside)
+//   10,20,30-40  3962...  (fiber / TARGETID list, see parseIdList)
+//   ELG  nodata  ...      (case-insensitive substring of the target's labels)
+//   !term                 (negation of any of the above)
+// Terms that look like comparisons but don't parse are returned in `bad` and ignored.
+const FIELDS = { z: zval, dchi2: dchi2val, fiber: t => t.fiber, snr: medSNR, zwarn: t => t.zwarn };
+const CMP = { "<": (a, b) => a < b, ">": (a, b) => a > b, "<=": (a, b) => a <= b, ">=": (a, b) => a >= b, "=": (a, b) => a == b };
+const isNum = s => s !== "" && isFinite(+s);
+function compileTerm(tok) {
+  if (tok.startsWith("!")) { const f = tok.length > 1 && compileTerm(tok.slice(1)); return f && (t => !f(t)); }
+  const ids = parseIdList(tok);
+  if (ids && (ids.list || ids.tids.size || ids.fibers.length)) return t =>
+    ids.tids.has(t.targetid) || ids.fibers.some(([a, b]) => t.fiber >= a && t.fiber <= b) ||
+    // a single long number that is not an exact TARGETID still works as a partial TARGETID search
+    (!ids.list && ids.tids.size === 1 && !ids.fibers.length && t.targetid.includes(tok));
+  if (/[<>=]/.test(tok)) {
+    const p = tok.split(/(<=|>=|<|>|=)/);           // [a, op, b] or [a, op, b, op, c]
+    if (p.length === 3) {                            // field op num, or num op field
+      const [a, op, b] = p, fa = FIELDS[a.toLowerCase()], fb = FIELDS[b.toLowerCase()];
+      if (fa && isNum(b)) return t => { const v = fa(t); return v != null && CMP[op](v, +b); };
+      if (fb && isNum(a)) return t => { const v = fb(t); return v != null && CMP[op](+a, v); };
+    } else if (p.length === 5) {                     // num op field op num
+      const [a, o1, f, o2, b] = p, ff = FIELDS[f.toLowerCase()];
+      if (ff && isNum(a) && isNum(b) && o1 !== "=" && o2 !== "=") return t => { const v = ff(t); return v != null && CMP[o1](+a, v) && CMP[o2](v, +b); };
     }
-    const m = tok.match(/^(z|dchi2|fiber|snr|zwarn)\s*(<=|>=|<|>|=)\s*([-\d.e]+)$/i);
-    if (m) {
-      const v = { z: zval(t), dchi2: dchi2val(t), fiber: t.fiber, snr: medSNR(t), zwarn: t.zwarn }[m[1].toLowerCase()], x = +m[3];
-      return { "<": v < x, ">": v > x, "<=": v <= x, ">=": v >= x, "=": v == x }[m[2]];
-    }
-    const hay = [noData(t) ? "NODATA" : "", isUnassigned(t) ? "UNASSIGNED" : "", t.targetid, t.fiber, t.spectype, t.subtype, t.objtype, t.morph, ...t.classes].join(" ").toUpperCase();
-    return hay.includes(tok.toUpperCase());
-  });
+    return null;
+  }
+  const up = tok.toUpperCase();
+  return t => [noData(t) ? "NODATA" : "", isUnassigned(t) ? "UNASSIGNED" : "", t.targetid, t.fiber, t.spectype, t.subtype, t.objtype, t.morph, ...t.classes].join(" ").toUpperCase().includes(up);
+}
+function compileQuery(q) {
+  const preds = [], bad = [];
+  for (const tok of q.split(/\s+/).filter(Boolean)) { const f = compileTerm(tok); f ? preds.push(f) : bad.push(tok); }
+  return { match: t => preds.every(f => f(t)), bad };
 }
 function rebuildOrder() {
   const q = $("q").value.trim(), zw = $("f-zwarn").checked, ns = $("f-nosky").checked, nv = $("f-novi").checked;
+  const { match, bad } = compileQuery(q);
+  $("q").classList.toggle("bad", bad.length > 0);
+  $("qerr").hidden = !bad.length;
+  $("qerr").textContent = bad.length ? `Ignored (can't parse): ${bad.join("  ")}` : "";
   let o = T.map((_, i) => i).filter(i => {
     const t = T[i];
-    return matches(t, q) && (!zw || t.zwarn) && (!ns || !isSky(t)) && (!nv || !S.vi[t.targetid]);
+    return match(t) && (!zw || t.zwarn) && (!ns || !isSky(t)) && (!nv || !S.vi[t.targetid]);
   });
   const key = $("sort").value;
   const kf = { i: i => i, fiber: i => T[i].fiber, z: i => zval(T[i]) ?? -1, dchi2: i => dchi2val(T[i]) ?? -1, snr: i => medSNR(T[i]) }[key];
