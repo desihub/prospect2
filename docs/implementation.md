@@ -52,23 +52,32 @@ in resolution, which is fine for display, and avoids shipping templates to the b
 - `parse_fiberlist` replaces desispec's `parse_fibers`, where `a-b` excludes b.
 - `-f` and `-t` select the union.
 
-## Payload encoding ("q1")
+## Payload encoding ("q2")
 
-The payload is gzip + base64, decoded in the browser with `DecompressionStream`. It is about 8.5×
-smaller than the Bokeh page for the same 20 spectra.
+The payload is gzip + base64, decoded in the browser with `DecompressionStream`. The example page
+is 485 kB, 10.2× smaller than the 4.95 MB Bokeh page for the same 20 spectra.
 
-- **Noise** is stored as `round(100·ln σ)`, int16, delta-coded, i.e. 1% steps.
+- **Packing (`_esc8`):** every integer array is stored as an int8 stream plus an int32 escape
+  stream (-128 = take the next escape value; for flux, -127 = masked → NaN). gzip compresses
+  bytes much better than int16/int32: this was ~20% smaller than the earlier int16/int32 "q1"
+  packing of the *same* quantized values (2026-11-13; decoded floats verified bit-identical), and
+  decoding is slightly faster (77 vs 85 ms for 500 spectra).
+- **Noise** is stored as `round(100·ln σ)`, delta-coded, i.e. 1% steps.
 - **Flux** is quantized at 0.1σ against the *decoded* noise, so the error is ≤ 0.05σ everywhere.
-  It is stored as int16, with auto int32 if S/N > 3276 per pixel. The minimum int is the masked
-  sentinel, which decodes to NaN.
-- **Model** is int32, delta-coded, in steps of (median *data* σ)/N, with `--model-precision N`
+- **Model** is delta-coded, in steps of (median *data* σ)/N, with `--model-precision N`
   defaulting to 100. If a spectrum has no unmasked data, the step is span(model)/(10N).
   - The model is noiseless, so coarse steps show as staircases. σ/10 was visibly stepped.
   - At N=100, steps are invisible in the full view but can reach 3–6 device px when zoomed and
     heavily smoothed.
-  - N=1000 keeps steps < 0.4 px, at +1.6 MB per 500 spectra. The user chose 100 as the default.
+  - N=1000 keeps steps < 0.4 px, at +1.2 MB per 500 spectra. The user chose 100 as the default.
   - A model-only rule (span/N) would need span/5e4 for the same worst case, because span/σ varies
     from 0.7 to 118.
+- *Further size options measured (2026-11-13), not done:* gzip-packing the app JS + uPlot inside
+  the page (saves ~60–70 kB fixed per page, +1–3 ms load; only matters for small pages; needs
+  global-scope `<script>` injection, `//# sourceURL`, and a `--no-pack` flag to keep testing and
+  debugging workable); noise in 2% steps (−1.5 kB/spectrum, lossy but invisible); flux at 0.2σ
+  (−1.2 kB/spectrum); model precision 30 (−0.8 kB/spectrum, but reintroduces visible staircases,
+  rejected); base85 (~−6%); brotli/xz (~−17%, needs an inlined JS decoder).
 - **TARGETIDs are strings.** int64 values above 2^53 lose precision as JSON numbers (…322 became
   …320). Negative TARGETIDs are sky or unassigned fibers.
 

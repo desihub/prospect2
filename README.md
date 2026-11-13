@@ -6,9 +6,9 @@ python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits -o alt/prosp
 
 | file | spectra | size |
 |---|---|---|
-| `../example_prospect.html` (current Bokeh prospect) | 20 | 4.7 MB (+ Bokeh JS from CDN) |
-| `prospect2_example.html` | 20 | 0.55 MB, fully offline |
-| `prospect2_petal4_all500.html` | 500 | 10.6 MB, fully offline (12.2 MB with `--model-precision 1000`) |
+| `../example_prospect.html` (current Bokeh prospect) | 20 | 4.95 MB (+ Bokeh JS from CDN) |
+| `prospect2_example.html` | 20 | 0.485 MB, fully offline |
+| `prospect2_petal4_all500.html` | 500 | 8.5 MB, fully offline |
 
 Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`, `&q=<filter>`.
 
@@ -41,13 +41,13 @@ License: BSD 3-clause (`LICENSE.rst`), same as prospect.
   masked pixels were zeroed before the resolution convolution.
   prospect's `create_model` hard-cuts at mid-overlap, giving model=0 where that camera is masked
   but the other camera has good data (e.g. fiber 2208 at 7537.6 Å).
-* **Data encoding ("q1")**: noise as 1%-step log, delta-coded int16; flux quantized at 0.1σ
-  (int16, int32 only if S/N > 3276/pix); model delta-coded int32 in steps of (median data σ)/N,
+* **Data encoding ("q2")**: noise as 1%-step log, delta-coded; flux quantized at 0.1σ; model
+  delta-coded in steps of (median data σ)/N. All packed as int8 + int32 escapes, then gzip+base64;
   `--model-precision N` (default 100; span(model)/(10N) for spectra with no unmasked data).
   The model is noiseless, so steps can show as staircases: N=100 is invisible in the full view but
   can reach ~3–6 device px in zoomed, heavily smoothed flat regions; N=1000 stays < 0.4 px
-  (+1.6 MB per 500 spectra). Flux error ≤ 0.05σ, mask preserved.
-  ~8.5x smaller than the Bokeh page for the same 20 spectra.
+  (+1.2 MB per 500 spectra). Flux error ≤ 0.05σ, mask preserved.
+  ~10x smaller than the Bokeh page for the same 20 spectra.
 * Trial-z model = pipeline model shifted in log λ (ignores resolution difference, fine for display).
 * VI stored in localStorage, exported as CSV.
 * Line markers (`v` key / toolbar "Full | Data | Model | Edge", hash `&ls=`), default **Data**:

@@ -371,39 +371,30 @@ table.mags td { padding: 2px; font-weight: 600; }
 const D = "__DATA__";
 
 /* ================= data decoding ================= */
-const H2F = (() => {            // float16 -> float32 lookup table
-  const t = new Float32Array(65536);
-  for (let h = 0; h < 65536; h++) {
-    const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff;
-    t[h] = e === 0 ? s * 2 ** -14 * (f / 1024) : e === 31 ? (f ? NaN : s * Infinity) : s * 2 ** (e - 15) * (1 + f / 1024);
-  }
-  return t;
-})();
 async function gunzip(b64) {
   const bin = atob(b64), bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Response(stream).arrayBuffer();
 }
-async function unpackF16(b64) {
-  if (!b64) return null;
-  const u16 = new Uint16Array(await gunzip(b64)), out = new Float32Array(u16.length);
-  for (let i = 0; i < u16.length; i++) out[i] = H2F[u16[i]];
-  return out;
-}
-// "q1" encoding: see encode() in make_prospect2.py
-async function decodeQ1() {
-  const [dln, q, dm] = await Promise.all([gunzip(D.noise), gunzip(D.flux), D.model ? gunzip(D.model) : null]);
-  const DL = new Int16Array(dln), Q = D.fluxbits === 32 ? new Int32Array(q) : new Int16Array(q), N = D.nspec * NW;
-  const QBAD = D.fluxbits === 32 ? -2147483648 : -32768;
-  const flux = new Float32Array(N), noise = new Float32Array(N), model = dm ? new Float32Array(N) : null, DM = dm ? new Int32Array(dm) : null;
+// "q2" encoding: see encode() and _esc8() in make_prospect2.py.  Each array is [int8 stream,
+// int32 escape stream]: -128 = take the next escape value; flux -127 = masked.
+async function decodeQ2() {
+  const parts = [D.noise, D.flux, D.model].map(p => p ? Promise.all(p.map(gunzip)) : null);
+  const [[n8, nx], [f8, fx], m] = await Promise.all(parts);
+  const DL = new Int8Array(n8), DLX = new Int32Array(nx), Q = new Int8Array(f8), QX = new Int32Array(fx);
+  const DM = m ? new Int8Array(m[0]) : null, DMX = m ? new Int32Array(m[1]) : null, N = D.nspec * NW;
+  const flux = new Float32Array(N), noise = new Float32Array(N), model = m ? new Float32Array(N) : null;
+  let en = 0, ef = 0, em = 0;
   for (let s = 0; s < D.nspec; s++) {
     let ln = 0, mq = 0; const o = s * NW, sc = DM ? D.mscale[s] : 0;
     for (let k = 0; k < NW; k++) {
-      const p = o + k; ln += DL[p];
-      if (Q[p] === QBAD) { flux[p] = NaN; noise[p] = NaN; }
-      else { const nz = Math.exp(ln / 100); noise[p] = nz; flux[p] = Q[p] * nz / 10; }
-      if (DM) { mq += DM[p]; model[p] = mq * sc; }
+      const p = o + k;
+      let d = DL[p]; if (d === -128) d = DLX[en++]; ln += d;
+      const q = Q[p];
+      if (q === -127) { flux[p] = NaN; noise[p] = NaN; }
+      else { const nz = Math.exp(ln / 100); noise[p] = nz; flux[p] = (q === -128 ? QX[ef++] : q) * nz / 10; }
+      if (DM) { let dm = DM[p]; if (dm === -128) dm = DMX[em++]; mq += dm; model[p] = mq * sc; }
     }
   }
   return [flux, noise, model];
@@ -1235,7 +1226,7 @@ document.addEventListener("keydown", e => {
 /* ================= boot ================= */
 (async () => {
   $("srcname").textContent = D.title;
-  [FLUX, NOISE, MODEL] = D.enc === "q1" ? await decodeQ1() : await Promise.all([unpackF16(D.flux), unpackF16(D.noise), unpackF16(D.model)]);
+  [FLUX, NOISE, MODEL] = await decodeQ2();
   if (MODEL) MHIDE = fillMaskedModel(MODEL, FLUX);
   T.forEach((t, i) => { let n = 0; const f = row(FLUX, i); for (let k = 0; k < NW; k++) if (f[k] === f[k]) n++; t.ngood = n; });
   const hp = new URLSearchParams(location.hash.slice(1));

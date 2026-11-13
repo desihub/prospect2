@@ -12,7 +12,7 @@ offline HTML page from a hand-written JS app and inlined uPlot.
 ## Layout
 
 - `make_prospect2.py`: the generator. It reads coadd + redrock (+ optional rrmodel), merges the
-  cameras, encodes the payload ("q1"), and fills the template.
+  cameras, encodes the payload ("q2"), and fills the template.
 - `prospect2_template.html`: the whole viewer (CSS + JS, ~1200 lines). The placeholders
   `/*__UPLOT_CSS__*/`, `/*__UPLOT_JS__*/`, `"__DATA__"` and `__TITLE__` are filled by the
   generator.
