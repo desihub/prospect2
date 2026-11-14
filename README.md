@@ -41,6 +41,12 @@ License: BSD 3-clause (`LICENSE.rst`), same as prospect.
   masked pixels were zeroed before the resolution convolution.
   prospect's `create_model` hard-cuts at mid-overlap, giving model=0 where that camera is masked
   but the other camera has good data (e.g. fiber 2208 at 7537.6 Å).
+* Alternate redrock fits: if `rrdetails-X.h5` matches `redrock-X.fits`, the top N fits per target
+  (`--nfits`, default 5; 0 ignores the file) are stored as z, spectype, subtype, Δχ² vs best, ZWARN
+  (~170 bytes/spectrum). The page lists them under "Redrock fits" in the right sidebar (click a row, or `<` / `>` to step);
+  selecting one sets z, so line markers and key-line panels follow it, and panels are chosen for its
+  spectype. Only the best-fit model is stored, so the model is hidden (and the plot says so) while an
+  alternate fit is selected. Fits within 1000 km/s of a better fit are faded and marked `≈#k`.
 * **Data encoding ("q2")**: noise as 1%-step log, delta-coded; flux quantized at 0.1σ; model
   delta-coded in steps of (median data σ)/N. All packed as int8 + int32 escapes, then gzip+base64;
   `--model-precision N` (default 100; span(model)/(10N) for spectra with no unmasked data).

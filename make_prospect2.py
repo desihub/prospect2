@@ -111,6 +111,43 @@ def camera_models(sp, zcat):
     return out
 
 
+def read_rrdetails(rrdetails_file, zcat, nfits=5):
+    """
+    Top-`nfits` redrock fits per target from an rrdetails*.h5 file, as a list (one entry per zcat
+    row) of [[z, spectype, subtype, chi2 - best chi2, zwarn, dup], ...] ranked by chi2 (compact
+    arrays to keep the page small; expanded to objects in JS), or None for a target that is
+    missing, has no fit, or whose best fit doesn't match zcat.  dup = index of a better-ranked fit within
+    1000 km/s (redrock's own "same redshift" criterion), else -1.
+    """
+    import h5py
+    C = 299792.458
+    out = []
+    nbad = 0
+    with h5py.File(rrdetails_file, 'r') as f:
+        zf = f['zfit']
+        for row in zcat:
+            key = str(int(row['TARGETID']))
+            if key not in zf or row['NPIXELS'] == 0:
+                out.append(None)
+                continue
+            d = zf[key]['zfit'][:nfits]
+            s = lambda x: (x.decode() if isinstance(x, bytes) else str(x)).strip()
+            if abs(d['z'][0] - row['Z']) > 1e-6 or s(d['spectype'][0]) != s(row['SPECTYPE']):
+                nbad += 1
+                out.append(None)
+                continue
+            fits_ = []
+            for k in range(len(d)):
+                zk = float(d['z'][k])
+                dup = next((j for j in range(k) if C * abs(zk - d['z'][j]) / (1 + d['z'][j]) < 1000), -1)
+                fits_.append([round(zk, 6), s(d['spectype'][k]), s(d['subtype'][k]).strip('-'),
+                              round(float(d['chi2'][k] - d['chi2'][0]), 1), int(d['zwarn'][k]), dup])
+            out.append(fits_)
+    if nbad:
+        print(f'WARNING: {nbad} targets in {rrdetails_file} have a best fit that does not match the redrock file; alternate fits not shown for them')
+    return out
+
+
 def find_file(filename):
     """filename or filename(.gz) if it exists, else None"""
     try:
@@ -257,6 +294,8 @@ def main():
     p.add_argument('--title', default=None)
     p.add_argument('--no-rrmodel', action='store_true',
                    help='ignore any rrmodel*.fits file; compute models from redrock templates + COEFF')
+    p.add_argument('--nfits', type=int, default=5,
+                   help='number of best redrock fits to keep from a matching rrdetails*.h5 file (0 = ignore it)')
     p.add_argument('--model-precision', type=float, default=100,
                    help='store the model in steps of (median data noise)/N; default %(default)s. '
                         '1000 is visually lossless even zoomed+smoothed (~+1.2 MB per 500 spectra)')
@@ -269,12 +308,15 @@ def main():
     rrfile = find_file(os.path.join(basedir, rrfile))
     zcat = None
     rrmodel_file = None
+    rrdetails_file = None
     if rrfile:
         zcat = Table.read(rrfile, 'REDSHIFTS')
         zcat.meta.update(fits.getheader(rrfile, 0))
         rrdir, rrbase = os.path.split(rrfile)
         if not args.no_rrmodel and rrbase.startswith('redrock'):
             rrmodel_file = find_file(os.path.join(rrdir, 'rrmodel' + rrbase[len('redrock'):]))
+        if args.nfits > 0 and rrbase.startswith('redrock'):
+            rrdetails_file = find_file(os.path.join(rrdir, 'rrdetails' + rrbase[len('redrock'):].replace('.fits.gz', '.fits').replace('.fits', '.h5')))
 
     #- -f and -t select the union of the listed fibers and TARGETIDs (all spectra if neither)
     keep = np.zeros(sp.num_spectra(), dtype=bool) if (args.fibers or args.targetids) else np.ones(sp.num_spectra(), dtype=bool)
@@ -341,6 +383,11 @@ def main():
     except ImportError:
         fibermask = None
 
+    fitlists = None
+    if rrdetails_file is not None:
+        fitlists = read_rrdetails(rrdetails_file, zcat, nfits=args.nfits)
+        print(f'INFO: top {args.nfits} redrock fits read from {rrdetails_file}')
+
     fm = sp.fibermap
     targets = []
     for i in range(sp.num_spectra()):
@@ -371,6 +418,8 @@ def main():
                      spectype=str(zb['SPECTYPE']).strip(), subtype=str(zb['SUBTYPE']).strip().strip('-'),
                      deltachi2=round(float(zb['DELTACHI2']), 2), chi2=round(float(zb['CHI2']), 1),
                      npixels=int(zb['NPIXELS']))
+        if fitlists is not None and fitlists[i] is not None:
+            t['fits'] = fitlists[i]
         targets.append(t)
 
     payload = dict(
@@ -378,6 +427,7 @@ def main():
         source=basefile,
         redrock=os.path.basename(rrfile) if zcat is not None else None,
         model_source=model_source,
+        rrdetails=os.path.basename(rrdetails_file) if rrdetails_file else None,
         wave0=float(wave[0]), dwave=float(dw[0]), nwave=len(wave), nspec=sp.num_spectra(),
         flux_unit='1e-17 erg/s/cm²/Å',
         targets=targets,

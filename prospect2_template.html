@@ -129,7 +129,12 @@ main { padding: 12px 16px 24px; }
 .titlebar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 .titlebar h1 { font-size: 18px; margin: 0; font-weight: 650; }
 .titlebar .sub { color: var(--ink-2); }
-.facts { display: flex; gap: 22px; flex-wrap: wrap; margin: 8px 0 10px; }
+/* ZWARN bit names sit under the Quality badge, out of flow, so the facts never shift when ZWARN changes;
+   row-gap / margin-bottom always reserve their line (also between wrapped rows) */
+.facts { display: flex; gap: 20px 22px; flex-wrap: wrap; margin: 8px 0 22px; }
+.fact { position: relative; }
+.facts .zwnames { position: absolute; left: 0; top: 100%; white-space: nowrap; color: var(--muted);
+                  font-weight: 400; font-size: 11.5px; line-height: 1.5; }
 .fact .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .fact .v { font-size: 15px; font-weight: 600; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
@@ -175,6 +180,16 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 table.kv { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.fits { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+table.fits th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 4px 3px 0; border-bottom: 1px solid var(--border); }
+table.fits td { padding: 3px 4px 3px 0; border-bottom: 1px solid var(--border); cursor: pointer; white-space: nowrap; }
+table.fits td small { color: var(--muted); }
+table.fits tr.dup td { color: var(--muted); }
+table.fits tr:not(.sel):hover td { background: var(--surface-2); }
+table.fits tr.sel td { background: color-mix(in srgb, var(--s-flux) 14%, transparent); font-weight: 600; }
+.sect h3 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
+.fitstep { display: inline-flex; align-items: center; gap: 4px; }
+.fitstep .iconbtn { padding: 0 5px; min-width: 0; height: 20px; }
 table.kv td { padding: 3px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
 table.kv td:first-child { color: var(--muted); width: 40%; padding-right: 8px; }
 table.kv td:last-child { font-variant-numeric: tabular-nums; word-break: break-word; }
@@ -323,7 +338,7 @@ table.mags td { padding: 2px; font-weight: 600; }
       <div class="cutlinks"><span class="num" id="radec"></span><a id="lsv" target="_blank" rel="noopener">Legacy Viewer ↗</a></div>
     </div>
     <div class="sect"><h3>Photometry (AB, not dereddened)</h3><table class="mags" id="mags"></table></div>
-    <div class="sect"><h3>Redrock</h3><table class="kv" id="rr"></table></div>
+    <div class="sect" id="fitsect" hidden><h3>Redrock fits <span class="hint">· click or <kbd>&lt;</kbd> <kbd>&gt;</kbd></span></h3><table class="fits" id="fits"></table></div>
     <div class="sect"><h3>Target</h3><table class="kv" id="tgt"></table></div>
     <div class="sect vi card" style="padding:10px">
       <h3>Visual inspection</h3>
@@ -343,11 +358,12 @@ table.mags td { padding: 2px; font-weight: 600; }
   <div class="box">
     <h3 style="margin-top:0">Keyboard shortcuts</h3>
     <table>
-      <tr><td><kbd>→</kbd> <kbd>j</kbd> / <kbd>←</kbd> <kbd>k</kbd></td><td>next / previous target (in filtered list)</td></tr>
+      <tr><td><kbd>→</kbd> <kbd>↓</kbd> <kbd>j</kbd> / <kbd>←</kbd> <kbd>↑</kbd> <kbd>k</kbd></td><td>next / previous target (in filtered list)</td></tr>
       <tr><td><kbd>g</kbd></td><td>toggle Inspect / Grid view</td></tr>
       <tr><td><kbd>s</kbd> / <kbd>S</kbd></td><td>more / less smoothing</td></tr>
       <tr><td><kbd>[</kbd> <kbd>]</kbd> · <kbd>{</kbd> <kbd>}</kbd></td><td>nudge z by ∓0.0005(1+z) · ∓0.005(1+z)</td></tr>
-      <tr><td><kbd>p</kbd></td><td>reset z to pipeline value</td></tr>
+      <tr><td><kbd>p</kbd></td><td>reset z to pipeline value (and to the best fit)</td></tr>
+      <tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>previous / next redrock fit (needs rrdetails); the model is hidden for alternate fits</td></tr>
       <tr><td><kbd>f</kbd></td><td>toggle observed / rest frame</td></tr>
       <tr><td><kbd>m</kbd> <kbd>n</kbd></td><td>toggle model / noise</td></tr>
       <tr><td><kbd>e</kbd> <kbd>a</kbd> <kbd>l</kbd> <kbd>c</kbd></td><td>emission / absorption / all lines / camera overlaps</td></tr>
@@ -403,6 +419,8 @@ async function decodeQ2() {
 const NW = D.nwave, WAVE = new Float64Array(NW);
 for (let i = 0; i < NW; i++) WAVE[i] = D.wave0 + i * D.dwave;
 const T = D.targets;
+// alternate redrock fits arrive as compact arrays [z, spectype, subtype, Δχ² vs best, zwarn, dup]
+for (const t of T) if (t.fits) t.fits = t.fits.map(([z, st, sub, dchi2, zw, dup]) => ({ z, st, sub, dchi2, zw, dup }));
 let FLUX, NOISE, MODEL, MHIDE;   // MHIDE[p]=1: data masked AND pipeline model == 0
 const row = (arr, i) => arr ? arr.subarray(i * NW, (i + 1) * NW) : null;
 
@@ -504,12 +522,18 @@ const S = {
   lcolor: "ink",             // line-marker palette (LCOLORS)
   lgap: 8,                   // px between plotted data and tick / label
   z: {},                      // per-target working z
+  fit: {},                    // per-target selected redrock fit (index into t.fits; absent = best)
   vi: (() => { try { return JSON.parse(LS?.getItem(VIKEY) || "{}"); } catch (e) { return {}; } })(),
   order: T.map((_, i) => i),
 };
 const SMOOTHS = [0, 1, 2, 3, 5, 8];
 const zpipe = i => T[i].z ?? 0;
 const zcur = i => S.z[i] ?? zpipe(i);
+// Alternate redrock fits (t.fits from rrdetails; [0] = best).  Only the best-fit model is stored,
+// so the model is hidden while an alternate fit is selected.
+const fitOf = i => S.fit[i] ?? 0;
+const altFit = i => fitOf(i) > 0 ? T[i].fits[fitOf(i)] : null;
+const spectypeOf = i => altFit(i)?.st ?? T[i].spectype;
 const saveVI = () => { try { LS?.setItem(VIKEY, JSON.stringify(S.vi)); } catch (e) {} };
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const $ = id => document.getElementById(id);
@@ -523,6 +547,10 @@ function zwarnBadge(t) {
   return t.zwarn === 0
     ? `<span class="status ok">${ICON_OK}ZWARN 0</span>`
     : `<span class="status bad" title="${esc(t.zwarn_names.join(", "))}">${ICON_BAD}ZWARN ${t.zwarn}</span>`;
+}
+// header version: also spell out the bit names (small, muted) below the badge
+function zwarnFact(t) {
+  return zwarnBadge(t) + (t.zwarn ? `<span class="zwnames">${esc(t.zwarn_names.join(", "))}</span>` : "");
 }
 // SKY = OBJTYPE SKY (incl. stuck positioners on sky, negative TARGETID); blank OBJTYPE + negative TARGETID = unassigned
 const isSky = t => t.objtype === "SKY" || t.targetid.startsWith("-");
@@ -645,7 +673,7 @@ function ghostMask(i) {          // 1 where the pixel lies in an entirely masked
 }
 function computeSeries(i, sigma) {
   const sm = smooth(row(FLUX, i), row(NOISE, i), sigma);
-  let m = noFit(T[i]) ? null : row(MODEL, i);   // no redrock fit -> no model
+  let m = noFit(T[i]) || altFit(i) ? null : row(MODEL, i);   // no redrock fit / alternate fit -> no model
   if (m) {
     m = Float32Array.from(smoothPlain(shiftModel(m, zpipe(i), zcur(i)), sigma));
     const hide = row(MHIDE, i);                  // gaps follow the data's pixels at any z / sigma
@@ -940,7 +968,7 @@ const PANELS = [
   { n: "Na D", c: 5893, h: 30, t: "STAR" }, { n: "Hα + [N II]", c: 6564.6, h: 35, t: "GALAXY QSO STAR" },
 ];
 function panelsFor(i) {
-  const t = T[i], zz = zcur(i), st = t.spectype || "GALAXY", lo = WAVE[0], hi = WAVE[NW - 1];
+  const zz = zcur(i), st = spectypeOf(i) || "GALAXY", lo = WAVE[0], hi = WAVE[NW - 1];
   const inr = p => (p.c - p.h * 0.5) * (1 + zz) > lo && (p.c + p.h * 0.5) * (1 + zz) < hi;
   const pri = PANELS.filter(p => inr(p) && p.t.includes(st)), sec = PANELS.filter(p => inr(p) && !p.t.includes(st));
   return [...pri, ...sec].slice(0, 6).sort((a, b) => a.c - b.c);
@@ -1024,16 +1052,23 @@ function renderInfo() {
   $("facts").innerHTML = [
     ["Redrock", noFit(t) ? `<span style="color:var(--muted)" title="redrock had no unmasked pixels to fit; its Z/SPECTYPE/ΔΧ² are placeholders">no fit</span>` : t.spectype ? `${esc(t.spectype)}${t.subtype ? " " + esc(t.subtype) : ""}` : "—"],
     ["z", noFit(t) ? "—" : `<span class="num">${fmt(t.z, 5)}</span> <span style="color:var(--muted);font-weight:400" class="num">± ${fmt(t.zerr, 5)}</span>`],
-    ["ΔΧ²", noFit(t) ? "—" : `<span class="num">${fmt(t.deltachi2, 1)}</span>`],
-    ["Quality", zwarnBadge(t)],
+    ["ΔΧ²", noFit(t) ? "—" : `<span class="num" title="Χ² / Npix = ${t.chi2 >= 1e6 ? t.chi2.toExponential(1) : fmt(t.chi2, 0)} / ${t.npixels ?? "—"}">${fmt(t.deltachi2, 1)}</span>`],
+    ["Quality", zwarnFact(t)],
+    ...(t.fits && !noFit(t) ? [["Redrock fit", `<span class="fitstep"><button class="iconbtn" data-fit="-1" title="previous fit (&lt;)">‹</button><span class="num">${fitOf(i) + 1} / ${t.fits.length}</span><button class="iconbtn" data-fit="1" title="next fit (&gt;)">›</button></span>`]] : []),
     ["Median S/N per pixel", `<span class="num" style="font-weight:500">${snr}</span>`],
     ["Exposure", `<span class="num">${fmt(t.exptime, 0)} s</span> <span style="color:var(--muted);font-weight:400">(${t.numexp} exp)</span>`],
   ].map(([k, v]) => `<div class="fact"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  $("facts").querySelectorAll("[data-fit]").forEach(b => b.onclick = () => stepFit(+b.dataset.fit));
 
   // z control
   $("zin").value = zz.toFixed(5);
   $("zin").classList.toggle("changed", zz !== zpipe(i));
-  $("zinfo").textContent = zz !== zpipe(i) ? `trial z = ${zz.toFixed(5)}  (Δv = ${((zz - zpipe(i)) / (1 + zpipe(i)) * 299792.458).toFixed(0)} km/s vs pipeline)` : "";
+  const af = altFit(i), dv = (a, b) => ((a - b) / (1 + b) * 299792.458).toFixed(0);
+  $("zinfo").textContent = af
+    ? `fit #${fitOf(i) + 1} of ${t.fits.length}: ${af.st}${af.sub ? " " + af.sub : ""} z = ${af.z.toFixed(5)}, Δχ² = +${fmt(af.dchi2, 1)} vs best`
+      + (Math.abs(zz - af.z) > 5e-7 ? ` · trial z = ${zz.toFixed(5)} (Δv = ${dv(zz, af.z)} km/s vs this fit)` : "")
+      + " · model hidden: only the best-fit model is stored"
+    : zz !== zpipe(i) ? `trial z = ${zz.toFixed(5)}  (Δv = ${dv(zz, zpipe(i))} km/s vs pipeline)` : "";
 
   // right column
   const ra = t.ra, dec = t.dec;
@@ -1046,11 +1081,14 @@ function renderInfo() {
   const bands = ["g", "r", "z", "w1", "w2"];
   $("mags").innerHTML = `<tr>${bands.map(b => `<th>${b.toUpperCase()}</th>`).join("")}<th>fib r</th></tr><tr>${bands.map(b => `<td>${fmt(t.mag[b])}</td>`).join("")}<td>${fmt(t.fibermag_r)}</td></tr>`;
   const kv = rows => rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
-  $("rr").innerHTML = kv([
-    ["SPECTYPE", `${esc(t.spectype ?? "—")} ${esc(t.subtype ?? "")}`], ["Z ± ZERR", `${fmt(t.z, 5)} ± ${fmt(t.zerr, 5)}`],
-    ["ZWARN", t.zwarn ? `${t.zwarn}: ${esc(t.zwarn_names.join(", "))}` : "0"], ["ΔΧ²", noFit(t) ? `${t.deltachi2.toExponential(2)} <span style="color:var(--muted)">(placeholder, no data)</span>` : fmt(t.deltachi2, 2)],
-    ["Χ² / Npix", `${t.chi2 >= 1e6 ? t.chi2.toExponential(1) : fmt(t.chi2, 0)} / ${t.npixels ?? "—"}`],
-  ]);
+  $("fitsect").hidden = !(t.fits && !noFit(t));
+  if (!$("fitsect").hidden) {
+    $("fits").innerHTML = `<tr><th>#</th><th>Type</th><th>z</th><th title="χ² minus the best fit's χ²">Δχ² vs best</th></tr>` + t.fits.map((f, k) =>
+      `<tr data-k="${k}" class="${k === fitOf(i) ? "sel" : ""}${f.dup >= 0 ? " dup" : ""}" title="${f.dup >= 0 ? `within 1000 km/s of fit #${f.dup + 1}` : ""}${f.zw ? `${f.dup >= 0 ? "; " : ""}ZWARN ${f.zw}` : ""}">
+        <td>${k + 1}</td><td>${esc(f.st)}${f.sub ? ` <small>${esc(f.sub)}</small>` : ""}</td>
+        <td class="num">${f.z.toFixed(5)}${f.dup >= 0 ? ` <small>≈#${f.dup + 1}</small>` : ""}</td><td class="num">${k ? "+" + fmt(f.dchi2, 1) : "best"}</td></tr>`).join("");
+    $("fits").querySelectorAll("tr[data-k]").forEach(r => r.onclick = () => selectFit(+r.dataset.k));
+  }
   $("tgt").innerHTML = kv([
     ["TARGETID", `<span class="mono">${t.targetid}</span>`], ["OBJTYPE / MORPH", `${esc(t.objtype || "—")} / ${esc(t.morph || "—")}`],
     ["Target bits", esc(t.classes.join(", ") || "—")], ["FIBERSTATUS", t.fiberstatus ? `${t.fiberstatus}: ${esc(t.fiberstatus_names.join(", "))}` : "0"],
@@ -1130,16 +1168,23 @@ $("fr-obs").onclick = () => setFrame(false); $("fr-rest").onclick = () => setFra
 function setYMode(m) { S.ymode = m; $("y-rob").setAttribute("aria-pressed", m === "robust"); $("y-full").setAttribute("aria-pressed", m === "full"); fitY(U); }
 $("y-rob").onclick = () => setYMode("robust"); $("y-full").onclick = () => setYMode("full");
 
-function setZ(z) {
+function setZ(z, fit = 0) {           // fit: selected redrock fit index (0 = best / manual z)
   if (!Number.isFinite(z) || z < -0.01 || z > 7) return;
   const i = S.cur, old = zcur(i);
+  if (fit) S.fit[i] = fit; else delete S.fit[i];
   if (Math.abs(z - zpipe(i)) < 5e-7) delete S.z[i]; else S.z[i] = z;
   let mn = U.scales.x.min, mx = U.scales.x.max;
   if (S.rest) { const f = (1 + old) / (1 + z); mn *= f; mx *= f; }   // keep same observed window
   refreshPlot(false); U.setScale("x", { min: mn, max: mx });
   renderInfo(); renderPanels();
 }
-const nudge = n => setZ(+(zcur(S.cur) + n * 0.0005 * (1 + zcur(S.cur))).toFixed(6));
+const nudge = n => setZ(+(zcur(S.cur) + n * 0.0005 * (1 + zcur(S.cur))).toFixed(6), fitOf(S.cur));   // stays on the selected fit
+function selectFit(k) {
+  const t = T[S.cur]; if (!t.fits || noFit(t)) return;
+  k = (k + t.fits.length) % t.fits.length;
+  setZ(k ? t.fits[k].z : zpipe(S.cur), k);
+}
+const stepFit = d => selectFit(fitOf(S.cur) + d);
 document.querySelectorAll("[data-dz]").forEach(b => b.onclick = () => nudge(+b.dataset.dz));
 $("zin").addEventListener("change", e => setZ(parseFloat(e.target.value)));
 $("zreset").onclick = () => setZ(zpipe(S.cur));
@@ -1205,7 +1250,7 @@ document.addEventListener("keydown", e => {
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key, inspect = S.view === "inspect";
   const act = {
-    ArrowRight: () => step(1), j: () => step(1), ArrowLeft: () => step(-1), k: () => step(-1),
+    ArrowRight: () => step(1), ArrowDown: () => step(1), j: () => step(1), ArrowLeft: () => step(-1), ArrowUp: () => step(-1), k: () => step(-1),
     g: () => setView(S.view === "grid" ? "inspect" : "grid"), "?": () => $("help").hidden = !$("help").hidden,
     "/": () => $("q").focus(), b: () => setSidebar("left"), i: () => setSidebar("right"),
   };
@@ -1213,6 +1258,7 @@ document.addEventListener("keydown", e => {
     s: () => setSmooth(SMOOTHS[Math.min(SMOOTHS.length - 1, SMOOTHS.indexOf(S.sigma) + 1)]),
     S: () => setSmooth(SMOOTHS[Math.max(0, SMOOTHS.indexOf(S.sigma) - 1)]),
     "[": () => nudge(-1), "]": () => nudge(1), "{": () => nudge(-10), "}": () => nudge(10), p: () => setZ(zpipe(S.cur)),
+    "<": () => stepFit(-1), ">": () => stepFit(1), ",": () => stepFit(-1), ".": () => stepFit(1),   // , . = unshifted < >
     f: () => setFrame(!S.rest), m: () => toggle("model"), n: () => toggle("noise"), e: () => toggle("em"), a: () => toggle("abs"),
     v: () => setLStyle(LSTYLES[(LSTYLES.indexOf(S.lstyle) + 1) % LSTYLES.length]),
     V: () => setLColor(LCOLORS[(LCOLORS.indexOf(S.lcolor) + 1) % LCOLORS.length]),

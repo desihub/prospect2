@@ -43,6 +43,26 @@ with rows matched by TARGETID and the wavelength grids checked. On any mismatch,
   pixels being zeroed before the resolution convolution.
 - Elsewhere the two agree to float32 precision.
 
+**Alternate redrock fits come from `rrdetails-X.h5`** (`read_rrdetails`, `--nfits N`, default 5,
+user choice 2026-11-13). Each target's `zfit/<TARGETID>/zfit` table has 9 fits ranked by χ²; row 0
+must match `redrock-X.fits` (z and SPECTYPE) or that target gets no alternates. The `zscan`
+χ²(z) curves are not used yet.
+- Stored compactly as `[z, spectype, subtype, χ² − best χ², zwarn, dup]` arrays (~170 bytes per
+  spectrum; JSON objects cost twice that and pushed the example page just under 10×).
+- Shown Δχ² is relative to the *best fit*. Redrock's per-row `deltachi2` compares each fit with
+  the next fit more than 1000 km/s away, so it is confusing when stepping through fits.
+- Near-duplicates are kept (user choice), just faded and marked `≈#k`: `dup` = the first
+  better-ranked fit within 1000 km/s (redrock's own criterion). E.g. a QSO fit 24 km/s from the best
+  GALAXY fit has identical line markers but changes the key-line panels.
+- **The model is hidden for alternate fits** (user choice "a"), with a note under the plot. Only
+  the best-fit model is stored; shifting it to another fit's z would be misleading, e.g. a galaxy
+  model slid to a QSO redshift. Storing real models for alternates is possible (~+2 kB/spectrum
+  each, the generator can compute them from templates + COEFF) but was not wanted.
+- Selecting a fit sets the working z with `S.fit[i] = k`. `[ ] { }` nudges keep the fit; typing a
+  z, `p` or ↺ return to the best fit. Key-line panels use the selected fit's spectype.
+- ZWARN of each fit is only in the row tooltip: alternates mostly carry SMALL_DELTA_CHI2, so a
+  warning icon on every row was clutter.
+
 **The trial-z model is the pipeline model shifted in log λ**, not a refit. This ignores the change
 in resolution, which is fine for display, and avoids shipping templates to the browser.
 
@@ -152,6 +172,12 @@ TARGETID (stuck sky fibers).
 
 - There are inspect and grid views. Key-line zoom panels are chosen by SPECTYPE; clicking a panel
   jumps there.
+- The right sidebar has no separate "Redrock" key/value section (dropped 2026-11-13, user choice, to
+  save vertical space): it duplicated the header facts. What was unique moved to the header: ZWARN
+  bit names are spelled out in muted text below the Quality badge (absolutely positioned in a
+  space the facts always reserve, so the layout doesn't jump when ZWARN changes; user request), and Χ² / Npix is the ΔΧ² fact's tooltip. If the
+  bit names ever crowd the header, the badge tooltip alone is acceptable to the user. The "Redrock
+  fits" table (rrdetails) takes the section's place.
 - The legend is replaced by a hover readout under the plot. Both sidebars are collapsible (`b`/`i`)
   and the choice is remembered in localStorage.
 - Filter syntax: `z>1.5 0.79<z<0.81 dchi2<25 ELG !QSO nodata unassigned 2030-2040`.
