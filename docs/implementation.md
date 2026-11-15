@@ -47,17 +47,34 @@ with rows matched by TARGETID and the wavelength grids checked. On any mismatch,
 user choice 2026-11-13). Each target's `zfit/<TARGETID>/zfit` table has 9 fits ranked by χ²; row 0
 must match `redrock-X.fits` (z and SPECTYPE) or that target gets no alternates. The `zscan`
 χ²(z) curves are not used yet.
-- Stored compactly as `[z, spectype, subtype, χ² − best χ², zwarn, dup]` arrays (~170 bytes per
+- Stored compactly as `[z, spectype, subtype, χ² − best χ², zwarn, dup(, model row)]` arrays (~170 bytes per
   spectrum; JSON objects cost twice that and pushed the example page just under 10×).
 - Shown Δχ² is relative to the *best fit*. Redrock's per-row `deltachi2` compares each fit with
   the next fit more than 1000 km/s away, so it is confusing when stepping through fits.
 - Near-duplicates are kept (user choice), just faded and marked `≈#k`: `dup` = the first
   better-ranked fit within 1000 km/s (redrock's own criterion). E.g. a QSO fit 24 km/s from the best
   GALAXY fit has identical line markers but changes the key-line panels.
-- **The model is hidden for alternate fits** (user choice "a"), with a note under the plot. Only
-  the best-fit model is stored; shifting it to another fit's z would be misleading, e.g. a galaxy
-  model slid to a QSO redshift. Storing real models for alternates is possible (~+2 kB/spectrum
-  each, the generator can compute them from templates + COEFF) but was not wanted.
+- **Alternate fits show their own redrock model when one is stored** (user choice 2026-11-14,
+  replacing the earlier "hide the model for alternates"). Shifting the best-fit model to another
+  fit's z would be misleading (e.g. a galaxy model slid to a QSO redshift), so the generator
+  computes real models (`alt_fit_models`: rrdetails `coeff` + templates, each camera's resolution,
+  merged like the best fit). Selection rule, measured to keep the 500-spectrum page at +3.5%:
+  - only fits 2..N+1, `--alt-models N` (default 2);
+  - only fits with χ² − best χ² < `--alt-max-dchi2` (default 100). Uncapped, 153 of the 500
+    spectra had all 8 alternates under 100, almost all sky or ZWARN≠0 (noise fits);
+  - never for OBJTYPE ≠ TGT (sky, unassigned/broken);
+  - encoded like the best model but at `--alt-model-precision` (default σ/30, max error 0.017σ;
+    staircases may show when zoomed + smoothed, extrapolated ~8–20 device px worst case vs 2.5–6
+    at σ/100).
+  Stored as payload `amodel`/`amscale` rows; a fit's array gets a 7th element = its row. Other
+  alternates hide the model with the reason under the plot. The masked-model rules (MHIDE fill,
+  no model in a fully masked camera) apply to these rows too (`AHIDE`).
+  - Lower *wavelength* resolution was measured and rejected: the resolution-convolved model is
+    barely sampled, so keeping every 2nd pixel gave >1σ errors at emission lines in 35% of
+    spectra (to ~37σ) while saving only ~25%. Second-difference coding, coding as a residual from
+    the best model, and shipping templates + coefficients to the browser were all worse.
+- **Sky fibers get no alternate fits at all** (hard-coded, user choice 2026-11-14): redrock fits to
+  sky residuals are noise.
 - Selecting a fit sets the working z with `S.fit[i] = k`. `[ ] { }` nudges keep the fit; typing a
   z, `p` or ↺ return to the best fit. Key-line panels use the selected fit's spectype.
 - ZWARN of each fit is only in the row tooltip: alternates mostly carry SMALL_DELTA_CHI2, so a

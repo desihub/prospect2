@@ -73,17 +73,26 @@ def encode(flux, noise, model, model_precision=100):
     q = np.round(np.where(bad, 0, flux / noise_q) * 10).astype(np.int64)
     out = dict(enc='q2', noise=_esc8(dln), flux=_esc8(q, masked=bad), model=None, mscale=None)
     if model is not None:
-        with np.errstate(all='ignore'):
-            scale = np.array([np.nanmedian(np.where(b, np.nan, n)) / model_precision if (~b).any() else np.nan
-                              for b, n in zip(bad, noise)])
-        span = np.ptp(np.concatenate([np.nan_to_num(model), np.zeros((len(model), 1))], axis=1), axis=1)
-        fallback = span / (10 * model_precision)
-        scale = np.where(np.isfinite(scale) & (scale > 0), scale,
-                         np.where(fallback > 0, fallback, 1.0))    #- 1.0: model identically 0
-        mq = np.round(np.nan_to_num(model) / scale[:, None]).astype(np.int64)
-        out['model'] = _esc8(np.diff(mq, axis=1, prepend=0))
-        out['mscale'] = [float(f'{s:.6g}') for s in scale]
+        out['model'], out['mscale'] = encode_model(model, noise, model_precision)
     return out
+
+
+def encode_model(model, noise, model_precision=100):
+    """
+    Model rows [nrow, nwave] in steps of scale_i = median(noise_i)/model_precision (noise_i = the
+    data noise of the spectrum the row belongs to, NaN where masked), delta-coded and packed by
+    _esc8.  See encode().  Returns (packed, per-row scales).
+    """
+    bad = ~(noise > 0)
+    with np.errstate(all='ignore'):
+        scale = np.array([np.nanmedian(np.where(b, np.nan, n)) / model_precision if (~b).any() else np.nan
+                          for b, n in zip(bad, noise)])
+    span = np.ptp(np.concatenate([np.nan_to_num(model), np.zeros((len(model), 1))], axis=1), axis=1)
+    fallback = span / (10 * model_precision)
+    scale = np.where(np.isfinite(scale) & (scale > 0), scale,
+                     np.where(fallback > 0, fallback, 1.0))    #- 1.0: model identically 0
+    mq = np.round(np.nan_to_num(model) / scale[:, None]).astype(np.int64)
+    return _esc8(np.diff(mq, axis=1, prepend=0)), [float(f'{s:.6g}') for s in scale]
 
 
 def camera_models(sp, zcat):
@@ -118,10 +127,12 @@ def read_rrdetails(rrdetails_file, zcat, nfits=5):
     arrays to keep the page small; expanded to objects in JS), or None for a target that is
     missing, has no fit, or whose best fit doesn't match zcat.  dup = index of a better-ranked fit within
     1000 km/s (redrock's own "same redshift" criterion), else -1.
+    Also returns {zcat row: the raw zfit rows} (for computing alternate-fit models).
     """
     import h5py
     C = 299792.458
     out = []
+    raw = {}
     nbad = 0
     with h5py.File(rrdetails_file, 'r') as f:
         zf = f['zfit']
@@ -143,9 +154,43 @@ def read_rrdetails(rrdetails_file, zcat, nfits=5):
                 fits_.append([round(zk, 6), s(d['spectype'][k]), s(d['subtype'][k]).strip('-'),
                               round(float(d['chi2'][k] - d['chi2'][0]), 1), int(d['zwarn'][k]), dup])
             out.append(fits_)
+            raw[len(out) - 1] = d
     if nbad:
         print(f'WARNING: {nbad} targets in {rrdetails_file} have a best fit that does not match the redrock file; alternate fits not shown for them')
-    return out
+    return out, raw
+
+
+def alt_fit_models(sp, wave, zcat, raw, fitlists, nalt=2, max_dchi2=100):
+    """
+    Redrock models for alternate fits, computed from the rrdetails templates + coeff, convolved with
+    each camera's resolution and merged like the best-fit model.  Only fits ranked 2..nalt+1 with
+    chi2 - best chi2 < max_dchi2 get a model; sky and unassigned fibers (OBJTYPE != TGT) never do.
+    Appends the model's row index to each such fit's entry in `fitlists` (in place).
+    Returns (models [nrow, nwave], spectrum index of each row), or (None, None) if there are none.
+    """
+    from desispec.interpolation import resample_flux
+    rows = []
+    for i, d in raw.items():
+        if str(sp.fibermap['OBJTYPE'][i]).strip() != 'TGT':
+            continue
+        for k in range(1, min(nalt + 1, len(d))):
+            if d['chi2'][k] - d['chi2'][0] < max_dchi2:
+                fitlists[i][k].append(len(rows))
+                rows.append((i, d[k]))
+    if not rows:
+        return None, None
+    hdr = zcat.meta if 'TEMNAM00' in zcat.meta else None
+    templates = load_redrock_templates(zcat_header=hdr)
+    idx = np.array([i for i, _ in rows])
+    sub = sp[idx]
+    cam = {b: np.zeros(sub.flux[b].shape) for b in sp.bands}
+    s = lambda x: (x.decode() if isinstance(x, bytes) else str(x)).strip()
+    for j, (i, d) in enumerate(rows):
+        tx = templates[(s(d['spectype']), s(d['subtype']).strip('-'))]
+        rest = tx.flux.T.dot(d['coeff'][:tx.nbasis]).T
+        for b in sp.bands:
+            cam[b][j] = sub.R[b][j].dot(resample_flux(sp.wave[b], tx.wave * (1 + d['z']), rest))
+    return merge_camera_models(sub, cam, wave), idx
 
 
 def find_file(filename):
@@ -296,6 +341,13 @@ def main():
                    help='ignore any rrmodel*.fits file; compute models from redrock templates + COEFF')
     p.add_argument('--nfits', type=int, default=5,
                    help='number of best redrock fits to keep from a matching rrdetails*.h5 file (0 = ignore it)')
+    p.add_argument('--alt-models', type=int, default=2,
+                   help='store real redrock models for up to this many alternate fits per target '
+                        '(fits 2..N+1, needs rrdetails; 0 = none, the model is then hidden for alternates)')
+    p.add_argument('--alt-max-dchi2', type=float, default=100,
+                   help='only store a model for alternate fits with chi2 - best chi2 below this')
+    p.add_argument('--alt-model-precision', type=float, default=30,
+                   help='as --model-precision, for alternate-fit models')
     p.add_argument('--model-precision', type=float, default=100,
                    help='store the model in steps of (median data noise)/N; default %(default)s. '
                         '1000 is visually lossless even zoomed+smoothed (~+1.2 MB per 500 spectra)')
@@ -385,8 +437,20 @@ def main():
 
     fitlists = None
     if rrdetails_file is not None:
-        fitlists = read_rrdetails(rrdetails_file, zcat, nfits=args.nfits)
+        fitlists, rawfits = read_rrdetails(rrdetails_file, zcat, nfits=args.nfits)
         print(f'INFO: top {args.nfits} redrock fits read from {rrdetails_file}')
+        #- sky fibers: no alternate fits (redrock fits to sky residuals are noise)
+        for i in range(len(fitlists)):
+            if str(sp.fibermap['OBJTYPE'][i]).strip() == 'SKY':
+                fitlists[i] = None
+                rawfits.pop(i, None)
+
+    alt_model, alt_rows = None, None
+    if fitlists is not None and args.alt_models > 0:
+        nalt = min(args.alt_models, args.nfits - 1)
+        alt_model, alt_rows = alt_fit_models(sp, wave, zcat, rawfits, fitlists, nalt=nalt, max_dchi2=args.alt_max_dchi2)
+        n = 0 if alt_model is None else len(alt_model)
+        print(f'INFO: models for {n} alternate fits (fits 2-{nalt + 1} with Δχ² < {args.alt_max_dchi2:g}, not sky/unassigned)')
 
     fm = sp.fibermap
     targets = []
@@ -435,6 +499,9 @@ def main():
         overlaps=overlaps,
         **encode(flux, noise, model, model_precision=args.model_precision),
     )
+    if alt_model is not None:
+        payload['amodel'], payload['amscale'] = encode_model(alt_model, noise[alt_rows], args.alt_model_precision)
+        payload['alt_models'] = dict(n=nalt, max_dchi2=args.alt_max_dchi2)
 
     template = open(os.path.join(HERE, 'prospect2_template.html'), encoding='utf-8').read()
     uplot_js = open(os.path.join(HERE, 'vendor', 'uPlot.iife.min.js'), encoding='utf-8').read()

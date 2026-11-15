@@ -45,8 +45,13 @@ License: BSD 3-clause (`LICENSE.rst`), same as prospect.
   (`--nfits`, default 5; 0 ignores the file) are stored as z, spectype, subtype, Δχ² vs best, ZWARN
   (~170 bytes/spectrum). The page lists them under "Redrock fits" in the right sidebar (click a row, or `<` / `>` to step);
   selecting one sets z, so line markers and key-line panels follow it, and panels are chosen for its
-  spectype. Only the best-fit model is stored, so the model is hidden (and the plot says so) while an
-  alternate fit is selected. Fits within 1000 km/s of a better fit are faded and marked `≈#k`.
+  spectype. Fits within 1000 km/s of a better fit are faded and marked `≈#k`. Sky fibers get no
+  alternate fits.
+* Alternate-fit models: fits 2..N+1 (`--alt-models N`, default 2; 0 = none) with χ² − best χ² <
+  `--alt-max-dchi2` (default 100) get their own redrock model, computed from the rrdetails
+  coefficients + templates and stored at `--alt-model-precision` (default 30, i.e. σ/30). Sky and
+  unassigned fibers never do. For other alternates the model is hidden and the plot says why.
+  Defaults add ~3.5% to the 500-spectrum page (325 models).
 * **Data encoding ("q2")**: noise as 1%-step log, delta-coded; flux quantized at 0.1σ; model
   delta-coded in steps of (median data σ)/N. All packed as int8 + int32 escapes, then gzip+base64;
   `--model-precision N` (default 100; span(model)/(10N) for spectra with no unmasked data).

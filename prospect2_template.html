@@ -363,7 +363,7 @@ table.mags td { padding: 2px; font-weight: 600; }
       <tr><td><kbd>s</kbd> / <kbd>S</kbd></td><td>more / less smoothing</td></tr>
       <tr><td><kbd>[</kbd> <kbd>]</kbd> · <kbd>{</kbd> <kbd>}</kbd></td><td>nudge z by ∓0.0005(1+z) · ∓0.005(1+z)</td></tr>
       <tr><td><kbd>p</kbd></td><td>reset z to pipeline value (and to the best fit)</td></tr>
-      <tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>previous / next redrock fit (needs rrdetails); the model is hidden for alternate fits</td></tr>
+      <tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>previous / next redrock fit (needs rrdetails); alternates show their own model if one was stored, else none</td></tr>
       <tr><td><kbd>f</kbd></td><td>toggle observed / rest frame</td></tr>
       <tr><td><kbd>m</kbd> <kbd>n</kbd></td><td>toggle model / noise</td></tr>
       <tr><td><kbd>e</kbd> <kbd>a</kbd> <kbd>l</kbd> <kbd>c</kbd></td><td>emission / absorption / all lines / camera overlaps</td></tr>
@@ -396,32 +396,42 @@ async function gunzip(b64) {
 // "q2" encoding: see encode() and _esc8() in make_prospect2.py.  Each array is [int8 stream,
 // int32 escape stream]: -128 = take the next escape value; flux -127 = masked.
 async function decodeQ2() {
-  const parts = [D.noise, D.flux, D.model].map(p => p ? Promise.all(p.map(gunzip)) : null);
-  const [[n8, nx], [f8, fx], m] = await Promise.all(parts);
+  const parts = [D.noise, D.flux, D.model, D.amodel].map(p => p ? Promise.all(p.map(gunzip)) : null);
+  const [[n8, nx], [f8, fx], m, am] = await Promise.all(parts);
   const DL = new Int8Array(n8), DLX = new Int32Array(nx), Q = new Int8Array(f8), QX = new Int32Array(fx);
-  const DM = m ? new Int8Array(m[0]) : null, DMX = m ? new Int32Array(m[1]) : null, N = D.nspec * NW;
-  const flux = new Float32Array(N), noise = new Float32Array(N), model = m ? new Float32Array(N) : null;
-  let en = 0, ef = 0, em = 0;
+  const N = D.nspec * NW, flux = new Float32Array(N), noise = new Float32Array(N);
+  let en = 0, ef = 0;
   for (let s = 0; s < D.nspec; s++) {
-    let ln = 0, mq = 0; const o = s * NW, sc = DM ? D.mscale[s] : 0;
+    let ln = 0; const o = s * NW;
     for (let k = 0; k < NW; k++) {
       const p = o + k;
       let d = DL[p]; if (d === -128) d = DLX[en++]; ln += d;
       const q = Q[p];
       if (q === -127) { flux[p] = NaN; noise[p] = NaN; }
       else { const nz = Math.exp(ln / 100); noise[p] = nz; flux[p] = (q === -128 ? QX[ef++] : q) * nz / 10; }
-      if (DM) { let dm = DM[p]; if (dm === -128) dm = DMX[em++]; mq += dm; model[p] = mq * sc; }
     }
   }
-  return [flux, noise, model];
+  return [flux, noise, m && decodeModel(m, D.mscale), am && decodeModel(am, D.amscale)];
+}
+// model rows: delta-coded integer steps of scale[row]
+function decodeModel([m8, mx], scale) {
+  const DM = new Int8Array(m8), DMX = new Int32Array(mx), model = new Float32Array(scale.length * NW);
+  let em = 0;
+  for (let s = 0; s < scale.length; s++) {
+    let mq = 0; const o = s * NW, sc = scale[s];
+    for (let k = 0; k < NW; k++) { let dm = DM[o + k]; if (dm === -128) dm = DMX[em++]; mq += dm; model[o + k] = mq * sc; }
+  }
+  return model;
 }
 
 const NW = D.nwave, WAVE = new Float64Array(NW);
 for (let i = 0; i < NW; i++) WAVE[i] = D.wave0 + i * D.dwave;
 const T = D.targets;
-// alternate redrock fits arrive as compact arrays [z, spectype, subtype, Δχ² vs best, zwarn, dup]
-for (const t of T) if (t.fits) t.fits = t.fits.map(([z, st, sub, dchi2, zw, dup]) => ({ z, st, sub, dchi2, zw, dup }));
+// alternate redrock fits arrive as compact arrays [z, spectype, subtype, Δχ² vs best, zwarn, dup(, model row)];
+// m = row of AMODEL holding this fit's own redrock model, or -1 (not stored)
+for (const t of T) if (t.fits) t.fits = t.fits.map(([z, st, sub, dchi2, zw, dup, m = -1]) => ({ z, st, sub, dchi2, zw, dup, m }));
 let FLUX, NOISE, MODEL, MHIDE;   // MHIDE[p]=1: data masked AND pipeline model == 0
+let AMODEL, AHIDE;               // the same for alternate-fit models (rows: see t.fits[k].m)
 const row = (arr, i) => arr ? arr.subarray(i * NW, (i + 1) * NW) : null;
 
 /* ================= numerics ================= */
@@ -463,10 +473,14 @@ function smoothPlain(m, sig) {
 // flag them in the returned mask, and fill the model there in place by linear interpolation between the
 // nearest unflagged pixels (constant at spectrum ends), so shifting/smoothing don't see fake zeros.
 // Masked pixels with model != 0 are left untouched and not flagged.
-function fillMaskedModel(m, f) {
-  const hide = new Uint8Array(m.length);
-  for (let p = 0; p < m.length; p++) if (m[p] === 0 && !Number.isFinite(f[p])) hide[p] = 1;
-  for (let s = 0; s < D.nspec; s++) {
+// specOf(r) = spectrum index of model row r (identity for MODEL).
+function fillMaskedModel(m, f, specOf = r => r) {
+  const hide = new Uint8Array(m.length), nrow = m.length / NW;
+  for (let r = 0; r < nrow; r++) {
+    const o = r * NW, fo = specOf(r) * NW;
+    for (let k = 0; k < NW; k++) if (m[o + k] === 0 && !Number.isFinite(f[fo + k])) hide[o + k] = 1;
+  }
+  for (let s = 0; s < nrow; s++) {
     const o = s * NW; let prev = -1;
     for (let k = 0; k <= NW; k++) {
       if (k < NW && hide[o + k]) continue;
@@ -529,8 +543,9 @@ const S = {
 const SMOOTHS = [0, 1, 2, 3, 5, 8];
 const zpipe = i => T[i].z ?? 0;
 const zcur = i => S.z[i] ?? zpipe(i);
-// Alternate redrock fits (t.fits from rrdetails; [0] = best).  Only the best-fit model is stored,
-// so the model is hidden while an alternate fit is selected.
+// Alternate redrock fits (t.fits from rrdetails; [0] = best).  An alternate fit shows its own model
+// if the generator stored one (f.m >= 0: top --alt-models fits with Δχ² < --alt-max-dchi2, not sky),
+// else the model is hidden.
 const fitOf = i => S.fit[i] ?? 0;
 const altFit = i => fitOf(i) > 0 ? T[i].fits[fitOf(i)] : null;
 const spectypeOf = i => altFit(i)?.st ?? T[i].spectype;
@@ -673,10 +688,12 @@ function ghostMask(i) {          // 1 where the pixel lies in an entirely masked
 }
 function computeSeries(i, sigma) {
   const sm = smooth(row(FLUX, i), row(NOISE, i), sigma);
-  let m = noFit(T[i]) || altFit(i) ? null : row(MODEL, i);   // no redrock fit / alternate fit -> no model
+  // no redrock fit / alternate fit without a stored model -> no model
+  const af = altFit(i), am = af && af.m >= 0;
+  let m = noFit(T[i]) || (af && !am) ? null : am ? row(AMODEL, af.m) : row(MODEL, i);
   if (m) {
-    m = Float32Array.from(smoothPlain(shiftModel(m, zpipe(i), zcur(i)), sigma));
-    const hide = row(MHIDE, i);                  // gaps follow the data's pixels at any z / sigma
+    m = Float32Array.from(smoothPlain(shiftModel(m, am ? af.z : zpipe(i), zcur(i)), sigma));
+    const hide = am ? row(AHIDE, af.m) : row(MHIDE, i);   // gaps follow the data's pixels at any z / sigma
     for (let k = 0; k < NW; k++) if (hide[k]) m[k] = NaN;
     // no model over an entirely masked camera (a PCA fit extrapolated that far is misleading)
     const gm = ghostMask(i);
@@ -1067,7 +1084,8 @@ function renderInfo() {
   $("zinfo").textContent = af
     ? `fit #${fitOf(i) + 1} of ${t.fits.length}: ${af.st}${af.sub ? " " + af.sub : ""} z = ${af.z.toFixed(5)}, Δχ² = +${fmt(af.dchi2, 1)} vs best`
       + (Math.abs(zz - af.z) > 5e-7 ? ` · trial z = ${zz.toFixed(5)} (Δv = ${dv(zz, af.z)} km/s vs this fit)` : "")
-      + " · model hidden: only the best-fit model is stored"
+      + (af.m >= 0 ? "" : !D.alt_models ? " · model hidden: only the best-fit model is stored"
+         : ` · no model stored (${fitOf(i) > D.alt_models.n ? `only for fits 2–${D.alt_models.n + 1}` : `Δχ² ≥ ${D.alt_models.max_dchi2}`})`)
     : zz !== zpipe(i) ? `trial z = ${zz.toFixed(5)}  (Δv = ${dv(zz, zpipe(i))} km/s vs pipeline)` : "";
 
   // right column
@@ -1273,8 +1291,13 @@ document.addEventListener("keydown", e => {
 /* ================= boot ================= */
 (async () => {
   $("srcname").textContent = D.title;
-  [FLUX, NOISE, MODEL] = await decodeQ2();
+  [FLUX, NOISE, MODEL, AMODEL] = await decodeQ2();
   if (MODEL) MHIDE = fillMaskedModel(MODEL, FLUX);
+  if (AMODEL) {
+    const spec = new Int32Array(AMODEL.length / NW);
+    T.forEach((t, i) => t.fits?.forEach(f => { if (f.m >= 0) spec[f.m] = i; }));
+    AHIDE = fillMaskedModel(AMODEL, FLUX, r => spec[r]);
+  }
   T.forEach((t, i) => { let n = 0; const f = row(FLUX, i); for (let k = 0; k < NW; k++) if (f[k] === f[k]) n++; t.ngood = n; });
   const hp = new URLSearchParams(location.hash.slice(1));
   if (hp.get("theme")) document.documentElement.setAttribute("data-theme", hp.get("theme"));
