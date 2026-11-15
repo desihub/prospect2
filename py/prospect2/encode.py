@@ -80,5 +80,7 @@ def encode_model(model, noise, model_precision=100):
     fallback = span / (10 * model_precision)
     scale = np.where(np.isfinite(scale) & (scale > 0), scale,
                      np.where(fallback > 0, fallback, 1.0))    #- 1.0: model identically 0
+    #- round the stored scale first and quantize with it, so the decoder's error stays <= scale/2
+    scale = np.array([float(f'{s:.6g}') for s in scale])
     mq = np.round(np.nan_to_num(model) / scale[:, None]).astype(np.int64)
-    return _esc8(np.diff(mq, axis=1, prepend=0)), [float(f'{s:.6g}') for s in scale]
+    return _esc8(np.diff(mq, axis=1, prepend=0)), [float(s) for s in scale]

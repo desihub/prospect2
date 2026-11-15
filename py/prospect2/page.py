@@ -10,7 +10,7 @@ make_html(), which takes desispec Spectra (and optionally redrock outputs) and
 returns the HTML of one self-contained page.
 """
 
-import os, re, json, warnings
+import os, re, json, html, warnings
 import numpy as np
 from astropy.table import vstack
 
@@ -266,14 +266,21 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
 
 
 def render_html(payload):
-    """Fill the viewer template with uPlot and `payload`; returns the page HTML"""
+    """
+    Fill the viewer template with uPlot and `payload`; returns the page HTML.
+    The title is HTML-escaped, and every "<" in the payload JSON is written as
+    \\u003c (same string in JS), so no string can end the <script> element
+    ("</script>") or open a comment ("<!--").  The data goes in last, so text in
+    it is never mistaken for a placeholder.
+    """
     template = (DATADIR / 'prospect2_template.html').read_text(encoding='utf-8')
     uplot_js = (DATADIR / 'vendor' / 'uPlot.iife.min.js').read_text(encoding='utf-8')
     uplot_css = (DATADIR / 'vendor' / 'uPlot.min.css').read_text(encoding='utf-8')
-    return (template.replace('/*__UPLOT_CSS__*/', uplot_css)
+    data = json.dumps(payload, separators=(',', ':')).replace('<', '\\u003c')
+    return (template.replace('__TITLE__', html.escape(payload['title']))
+                    .replace('/*__UPLOT_CSS__*/', uplot_css)
                     .replace('/*__UPLOT_JS__*/', uplot_js)
-                    .replace('"__DATA__"', json.dumps(payload, separators=(',', ':')))
-                    .replace('__TITLE__', payload['title']))
+                    .replace('"__DATA__"', data))
 
 
 def make_html(spectra, zcat=None, models=None, fits=None, title=None, provenance=None,
