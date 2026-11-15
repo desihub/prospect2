@@ -1,4 +1,4 @@
-# prospect2 (alt/)
+# prospect2
 
 Prototype replacement for the DESI prospect spectral viewer. A Python generator writes a single
 offline HTML page from a hand-written JS app and inlined uPlot.
@@ -19,8 +19,13 @@ offline HTML page from a hand-written JS app and inlined uPlot.
 - `vendor/`: uPlot 1.6.31 (MIT, see `uPlot.LICENSE`). Don't upgrade casually; the y-range hooks
   depend on its behavior.
 - `data/`: emission/absorption line lists (copied from prospect).
-- Example inputs live in `../data/` (petal 4, tile 1496: coadd, redrock, rrmodel). They are not in
-  this repo.
+- `scratch/` (git-ignored, not in the repo) holds the test inputs and outputs:
+  - `scratch/data/`: example inputs (petal 4, tile 1496: coadd, redrock, rrmodel, rrdetails).
+  - `scratch/output/`: pages from this code.
+  - `scratch/prospect1/`: the equivalent pages from the old Bokeh prospect, for comparison, and
+    `plot_prospect`, the script that made them.
+  - Naming: a page made from all of `coadd-X.fits` is `prospect-X.html`; subsets get descriptive
+    names (`example-20.html` = fibers 2000–2019).
 
 ## Running
 
@@ -29,10 +34,10 @@ Use the `desi` conda env's python directly. `conda run` drops heredoc stdin.
 ```
 export RR_TEMPLATE_DIR=~/desi/git/redrock-templates
 cd ~/desi/dev/prospect2
-~/miniforge3/envs/desi/bin/python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits \
-    -o alt/prospect2_example.html -f 2000:2020
-~/miniforge3/envs/desi/bin/python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits \
-    -o alt/prospect2_petal4_all500.html
+~/miniforge3/envs/desi/bin/python make_prospect2.py -i scratch/data/coadd-4-1496-thru20240214.fits \
+    -o scratch/output/example-20.html -f 2000:2020
+~/miniforge3/envs/desi/bin/python make_prospect2.py -i scratch/data/coadd-4-1496-thru20240214.fits \
+    -o scratch/output/prospect-4-1496-thru20240214.html
 ```
 
 Note that `-f 2000-2020` is *inclusive* (21 fibers); this differs from desispec. After changing
@@ -43,7 +48,7 @@ the generator or the template, regenerate both example pages.
 There is no test suite. Verify by rendering:
 
 - Screenshot with headless Chrome:
-  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --window-size=1600,1100 --virtual-time-budget=8000 --screenshot=OUT.png "file://…/prospect2_example.html#i=7"`
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --window-size=1600,1100 --virtual-time-budget=8000 --screenshot=OUT.png "file://$PWD/scratch/output/example-20.html#i=7"`
 - Add `--enable-logging=stderr --v=0` and grep for `CONSOLE` to catch JS errors and `console.log`
   output.
 - For interaction tests, inject a `<script>` into a *scratch copy* of the page that dispatches
@@ -79,5 +84,5 @@ There is no test suite. Verify by rendering:
 ## Git
 
 - Commit only when asked.
-- Generated `prospect2_*.html` pages are git-ignored (except `prospect2_template.html`); don't add
-  them.
+- `scratch/` is git-ignored; never add it or generated pages. Write test pages to
+  `scratch/output/` (or a session scratchpad), not the repo root.

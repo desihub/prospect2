@@ -8,8 +8,8 @@ main plot, plain canvas for thumbnails) plus a compact gzip+base64 float16
 data payload.  No Bokeh, no server, works offline.
 
 Usage:
-    python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits \
-        -o alt/prospect2_example.html -f 2000:2020
+    python make_prospect2.py -i coadd-4-1496-thru20240214.fits \
+        -o example-20.html -f 2000:2020
 """
 
 import os, sys, json, gzip, base64, argparse, warnings

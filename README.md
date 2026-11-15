@@ -1,14 +1,18 @@
 # prospect2 prototype
 
 ```
-python alt/make_prospect2.py -i data/coadd-4-1496-thru20240214.fits -o alt/prospect2_example.html -f 2000:2020
+python make_prospect2.py -i coadd-4-1496-thru20240214.fits -o prospect-4-1496-thru20240214.html
 ```
 
-| file | spectra | size |
-|---|---|---|
-| `../example_prospect.html` (current Bokeh prospect) | 20 | 4.95 MB (+ Bokeh JS from CDN) |
-| `prospect2_example.html` | 20 | 0.485 MB, fully offline |
-| `prospect2_petal4_all500.html` | 500 | 8.5 MB, fully offline |
+Matching `redrock-*.fits`, `rrmodel-*.fits` and `rrdetails-*.h5` files are found next to the coadd.
+Use `-f`/`-t` to select a subset (see below).
+
+Page sizes for petal 4, tile 1496:
+
+| spectra | prospect (Bokeh)                 | prospect2           |
+|---------|----------------------------------|---------------------|
+| 20      | 4.95 MB (+ Bokeh JS from CDN)    | 0.51 MB, offline    |
+| 500     | 107 MB (+ Bokeh JS from CDN)     | 8.87 MB, offline    |
 
 Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`, `&q=<filter>`.
 
