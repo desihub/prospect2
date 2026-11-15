@@ -37,6 +37,16 @@ def test_payload_basics(sp):
     json.dumps(p)          #- serializable
 
 
+def test_source_never_null(sp):
+    #- the JS keys stored VI and names the VI export by `source`
+    p = make_payload(sp, **NOALT)
+    assert p['title'] == 'prospect2' and p['source'] == 'prospect2'
+    p = make_payload(sp, title='My page', **NOALT)
+    assert p['source'] == 'My page'
+    p = make_payload(sp, title='My page', provenance=dict(source='coadd-x.fits'), **NOALT)
+    assert p['title'] == 'My page' and p['source'] == 'coadd-x.fits'
+
+
 def test_payload_data_roundtrip(sp):
     p = make_payload(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp, 2.0), **NOALT)
     flux, noise, model, _ = decode_q2(p)

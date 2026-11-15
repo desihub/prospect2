@@ -27,7 +27,7 @@ DESI package layout (as desispec): `bin/` scripts work with `bin/` on `$PATH` an
 - `py/prospect2/util.py`: `-f`/`-t` selection, output naming.
 - Logging uses `desiutil.log.get_logger()`, not `print`.
 - `py/prospect2/data/` (package data, found via `importlib.resources`):
-  - `prospect2_template.html`: **the whole viewer app** (CSS + JS, ~1200 lines). It's source code,
+  - `prospect2_template.html`: **the whole viewer app** (CSS + JS, one file). It's source code,
     not data, but lives here so installed packages can find it. The placeholders
     `/*__UPLOT_CSS__*/`, `/*__UPLOT_JS__*/`, `"__DATA__"` and `__TITLE__` are filled by the
     generator.
@@ -66,8 +66,10 @@ the generator or the template, regenerate both example pages.
 ## Testing
 
 `pytest` (tiers 1–3, ~5 s) and `pytest -m browser` (headless Chrome); see README "Tests" and
-`doc/implementation.md` "Tests" for the design. Run both after changes; add tests for new
-behavior. Tests live in `py/prospect2/test/`, helpers (synthetic Spectra, a Python q2 decoder,
+`doc/implementation.md` "Tests" for the design. **Plain `pytest` never runs the browser tests**:
+they are opt-in by design (`addopts = "-m 'not browser'"` in `pyproject.toml`), so run
+`pytest -m browser` separately after any change; it is the only check of the JS (q2 decoding,
+fiber-list parsing). Add tests for new behavior. Tests live in `py/prospect2/test/`, helpers (synthetic Spectra, a Python q2 decoder,
 payload extraction) in `test/util.py`. If the q2 encoding changes, update `decode_q2` there too:
 the browser test compares it with the JS decoder.
 

@@ -69,6 +69,10 @@ pytest                 # tiers 1-3 (about 5 s)
 pytest -m browser      # tier 4: page in headless Chrome
 ```
 
+Plain `pytest` never runs tier 4: it is opt-in (`addopts` in `pyproject.toml`), because it needs
+Chrome and is slower. Run it separately after changing the viewer template or the payload
+encoding; it is the only test of the JS.
+
 | tier | file(s)                                      | needs                                      |
 |------|----------------------------------------------|--------------------------------------------|
 | 1    | `test_util.py`, `test_encode.py`, `test_models.py` | nothing                              |

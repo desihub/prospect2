@@ -14,6 +14,7 @@ import numpy as np
 
 
 def _b64gz(a):
+    #- mtime=0: no timestamp in the gzip header, so the same inputs give a byte-identical page
     return base64.b64encode(gzip.compress(np.ascontiguousarray(a).tobytes(), compresslevel=9, mtime=0)).decode('ascii')
 
 

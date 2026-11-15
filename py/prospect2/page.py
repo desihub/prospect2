@@ -107,7 +107,9 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
                  alt_models=2, alt_max_dchi2=100, model_precision=100, alt_model_precision=30):
     """
     The page's data payload (a JSON-serializable dict); see make_html for the
-    arguments.  Inputs must already be single objects (not lists).
+    arguments.  Inputs must already be single objects (not lists).  The keys,
+    and how to add one, are listed in doc/implementation.md "Payload contents";
+    keep that in sync.
     """
     log = get_logger()
     sp = spectra
@@ -245,9 +247,11 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
             t['fits'] = fitlists[i]
         targets.append(t)
 
-    source = provenance.get('source')
+    #- the JS keys stored VI and names the VI export by `source`, so it must not be null
+    title = title or provenance.get('source') or 'prospect2'
+    source = provenance.get('source') or title
     payload = dict(
-        title=title or source or 'prospect2',
+        title=title,
         source=source,
         redrock=provenance.get('redrock') if zcat is not None else None,
         model_source=model_source,

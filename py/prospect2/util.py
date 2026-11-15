@@ -17,7 +17,9 @@ from desiutil.log import get_logger
 def parse_fiberlist(spec):
     """
     "10,20,30-40,50:60" -> [10, 20, 30..40, 50..59]: "a-b" is inclusive,
-    "a:b" is python-style (excludes b).  Same syntax as the viewer's filter box.
+    "a:b" is python-style (excludes b).  Same syntax as the viewer's filter box
+    (parseIdList() in the template; the browser test checks they agree), except
+    that the filter box reads numbers >= 5000 or < 0 as TARGETIDs.
     """
     fibers = []
     for part in spec.replace(' ', '').split(','):

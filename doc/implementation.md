@@ -63,7 +63,8 @@ User decisions:
   lists, ≈-duplicate marks and sky exclusion are computed in `make_payload`.
 - `make_payload` (dict) and `render_html` (str) are separate, so the payload can be tested without
   parsing HTML.
-- File names shown on the page come from `provenance=dict(source, redrock, model_source, rrdetails)`.
+- File names for the page come from `provenance=dict(source, redrock, model_source, rrdetails)`.
+  Only `source` is used by the viewer today (see "Payload contents").
 
 ## Tests
 
@@ -175,6 +176,55 @@ in resolution, which is fine for display, and avoids shipping templates to the b
   existing …` instead of `Wrote …`.
 - Naming errors are raised before `read_spectra`, so they are immediate.
 
+## Payload contents
+
+**The payload is internal** (user decision, 2026-11-15): one JSON object, built by
+`make_payload()` (`page.py`), written by `render_html()` in place of `"__DATA__"`, and read by the
+viewer as `const D`. It always ships in the same file as the JS that reads it, so it has no
+version contract and can change freely; keep this section current instead.
+
+Top level (`D.x`):
+
+| key | meaning |
+|---|---|
+| `title` | page title: `title` argument, else `provenance['source']`, else `'prospect2'` |
+| `source` | input file name, else `title`; never null. Keys the VI in localStorage and names the VI export |
+| `redrock`, `model_source`, `rrdetails` | provenance file names (or `'input models'`, `'redrock templates + COEFF'`); stored but not yet displayed by the JS |
+| `wave0`, `dwave`, `nwave` | the merged linear wavelength grid (`coadd_cameras`); JS `WAVE`, `NW` |
+| `nspec`, `flux_unit` | number of spectra; flux unit label |
+| `targets` | one dict per spectrum, row order = data rows (below) |
+| `lines` | emission/absorption line lists (`io.read_lines`) |
+| `overlaps` | camera overlap regions `[lo, hi, label]` |
+| `enc`, `noise`, `flux`, `model`, `mscale` | the q2 arrays (next section); `model`/`mscale` null without a zcat |
+| `amodel`, `amscale`, `alt_models` | only when alternate-fit models exist: their rows, and the `--alt-models`/`--alt-max-dchi2` settings |
+
+`targets[i]` (JS `T[i]`), all plain JSON:
+- Always: `i`, `targetid` (**string**, int64 > 2^53), `fiber`, `tileid` (null if the fibermap
+  lacks the column), `ra`, `dec`, `objtype`, `morph`, `classes`/`primary` (target-bit names),
+  `mag` (`{g, r, z, w1, w2}`), `fibermag_r`, `ebv`, `exptime`, `numexp`, `fiberstatus`,
+  `fiberstatus_names`, `snr` (`{band: median S/N}`), `masked_cams` (`[lo, hi, band]` for cameras
+  with no unmasked pixels).
+- With a zcat: `z`, `zerr`, `zwarn`, `zwarn_names`, `spectype`, `subtype`, `deltachi2`, `chi2`,
+  `npixels`. Absent, not null, without one. Redrock's no-fit placeholders are kept raw; see
+  "Degenerate spectra".
+- With rrdetails, non-sky only: `fits`, compact arrays `[z, spectype, subtype, Δχ², zwarn, dup(,
+  model row)]` (`_fit_table`). The JS expands them to objects `{z, st, sub, dchi2, zw, dup, m}`
+  at load, and adds `t.ngood` (unmasked pixel count) after decoding.
+
+Decoded arrays: `FLUX`, `NOISE`, `MODEL` are `Float32Array(nspec·NW)`, row *i* = `T[i]`
+(`row(arr, i)`), masked = NaN. `AMODEL` rows are indexed by a fit's `m`. `MHIDE`/`AHIDE` flag the
+model pixels to hide (see "Masked model rule").
+
+**Recipes:**
+- *New per-target value:* add it to the `t = dict(...)` in `make_payload` and read `T[i].key` in
+  the JS; no template placeholder is needed. Show it in `renderInfo()`; to filter on it, add it to
+  `FIELDS` (numeric comparisons) or to the label string in `compileTerm` (substring match), and
+  update the filter help in the template and README. Test it in `test_page.py`. Nothing checks
+  that a payload key is used by the JS, or that a key the JS reads exists (it is just
+  `undefined`).
+- *New per-pixel array:* encode it in `encode.py`, decode it in `decodeQ2()` **and** in
+  `test/util.py` `decode_q2`, then run `pytest -m browser`.
+
 ## Payload encoding ("q2")
 
 The payload is gzip + base64, decoded in the browser with `DecompressionStream`. The example page
@@ -206,8 +256,8 @@ is 485 kB, 10.2× smaller than the 4.95 MB Bokeh page for the same 20 spectra.
 
 ## Plotting (JS)
 
-**Y-range is robust**: the 1–99th percentile of flux and model in the visible window, plus
-padding, including 0. A "Full" toggle switches to the full range.
+**Y-range is robust**: the 1–99th percentile of the flux in the visible window, padded, then
+widened to include the model's full min/max (not percentiles) and 0. A "Full" toggle uses the flux's full range instead of the percentiles.
 - Masked data never enters the y-range.
 - uPlot gotcha: use `y: {auto: true, range: u => calcY(u)}`. `calcY` reads
   `u.series[0].min/max`, because the range function runs before `scales.x` updates. For refits
