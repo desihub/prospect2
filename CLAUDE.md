@@ -35,6 +35,10 @@ DESI package layout (as desispec): `bin/` scripts work with `bin/` on `$PATH` an
     depend on its behavior.
   - `{emission,absorption}_lines.txt`: line lists (copied from prospect).
 - `doc/implementation.md`: design decisions and their reasons.
+- `pyproject.toml` (modeled on desiutil's) + `MANIFEST.in`. New package data files must match the
+  `[tool.setuptools.package-data]` globs, and new `bin/` scripts must be added to `script-files`.
+  Check with `python -m build --no-isolation --outdir <scratchpad>` and list the wheel; never
+  build into the repo (`MANIFEST.in` prunes `scratch/`).
 - `scratch/` (git-ignored, not in the repo) holds the test inputs and outputs:
   - `scratch/data/`: example inputs (petal 4, tile 1496: coadd, redrock, rrmodel, rrdetails).
   - `scratch/output/`: pages from this code.

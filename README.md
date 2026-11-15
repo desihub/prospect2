@@ -1,6 +1,7 @@
 # prospect2 prototype
 
-With `bin/` on `$PATH` and `py/` on `$PYTHONPATH` (no installation needed):
+Either install it (`pip install .`, or `pip install .[all]` to also get desitarget for target-bit
+names), or use it in place with `bin/` on `$PATH` and `py/` on `$PYTHONPATH`:
 
 ```
 plot_prospect2 -i coadd-4-1496-thru20240214.fits                 # -> ./prospect-4-1496-thru20240214.html

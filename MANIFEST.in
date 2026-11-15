@@ -1,0 +1,5 @@
+# scratch/ holds large local test data (git-ignored); never ship it
+prune scratch
+prune .github
+global-exclude .gitignore .DS_Store *.pyc *.swp
+include doc/*.md

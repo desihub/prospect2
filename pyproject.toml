@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prospect2"
+dynamic = ["version"]
+authors = [ { name = "DESI Collaboration", email = "desi-data@desi.lbl.gov" } ]
+license = "BSD-3-Clause"
+license-files = ["LICENSE.rst"]
+description = "Offline HTML viewer pages for DESI spectra and redrock fits"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "astropy", "h5py", "desiutil", "desispec", "redrock"]
+keywords = ["DESI", "spectra", "visualization"]
+classifiers = [ "Development Status :: 3 - Alpha",
+                "Environment :: Console",
+                "Intended Audience :: Science/Research",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Topic :: Scientific/Engineering :: Astronomy",
+                "Topic :: Scientific/Engineering :: Visualization" ]
+
+[project.optional-dependencies]
+# desitarget: target-bit names (ELG, LRG, ...) on the page; omitted without it
+all = ["desitarget"]
+test = ["prospect2[all]", "pytest"]
+
+[tool.setuptools]
+package-dir = {"" = "py"}
+# DESI convention: bin/ wrappers work without installation (bin/ on $PATH, py/ on $PYTHONPATH)
+script-files = ["bin/plot_prospect2"]
+
+[tool.setuptools.packages.find]
+where = ["py"]
+
+[tool.setuptools.package-data]
+# viewer template (the JS app), vendored uPlot + license, line lists
+"prospect2" = ["data/*", "data/vendor/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "prospect2.__version__"}  # read with ast.literal_eval, no import needed

@@ -31,6 +31,16 @@ code reads in `py/prospect2/data/`, found with `importlib.resources`, so it all 
 dependencies are numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
 optionally desitarget. License: BSD 3-clause, same authors as prospect.
 
+**Packaging** (`pyproject.toml` only, modeled on desiutil, the most modern desihub layout; user
+decision 2026-11-14 to add it before sharing):
+- `bin/` scripts are installed with `script-files`, not `console_scripts` entry points, so the
+  same `bin/` wrappers work installed and in place (DESI convention).
+- Version is `__version__` in `py/prospect2/__init__.py`, read statically by setuptools (no import,
+  so building doesn't need desispec).
+- Dependencies: numpy, astropy, h5py (rrdetails), desiutil, desispec, redrock (all on PyPI).
+  desitarget is optional (`[all]`): without it the page just lacks target-bit names.
+- `MANIFEST.in` prunes `scratch/` (hundreds of MB of local test data) from sdists.
+
 ## Python API
 
 **`prospect2.make_html(spectra, zcat=None, models=None, fits=None, ...)` is the entry point**
