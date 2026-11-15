@@ -20,14 +20,25 @@ from desispec.coaddition import coadd_cameras
 from .encode import encode, encode_model
 from .models import camera_models, merge_camera_models, alt_fit_models
 from .io import DATADIR, read_lines
+from .util import fibermap_value
 
 #- redrock's "same redshift" criterion for marking near-duplicate alternate fits
 _DUP_KMS = 1000
 
 
 def mag(flux):
+    """AB magnitude of a nanomaggie flux, or None if flux is None or not > 0"""
+    if flux is None:
+        return None
     flux = float(flux)
     return round(22.5 - 2.5 * np.log10(flux), 2) if flux > 0 else None
+
+
+def _num(x, ndigits):
+    """round(float(x), ndigits), or None if x is None or not finite"""
+    if x is None or not np.isfinite(float(x)):
+        return None
+    return round(float(x), ndigits)
 
 
 def target_classes(row):
@@ -114,6 +125,8 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
     log = get_logger()
     sp = spectra
     provenance = provenance or {}
+    if sp.fibermap is None or 'TARGETID' not in sp.fibermap.colnames:
+        raise ValueError('spectra.fibermap must have a TARGETID column (the only required column)')
     nspec = sp.num_spectra()
     if nspec == 0:
         raise ValueError('no spectra')
@@ -202,7 +215,8 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
     fitlists = None
     if fits is not None:
         #- sky fibers: no alternate fits (redrock fits to sky residuals are noise)
-        fitlists = [None if (d is None or str(sp.fibermap['OBJTYPE'][i]).strip() == 'SKY') else _fit_table(d)
+        fitlists = [None if (d is None or str(fibermap_value(sp.fibermap, i, 'OBJTYPE', default='')).strip() == 'SKY')
+                    else _fit_table(d)
                     for i, d in enumerate(fits)]
 
     alt_model, alt_rows = None, None
@@ -213,23 +227,28 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
         n = 0 if alt_model is None else len(alt_model)
         log.info(f'models for {n} alternate fits (fits 2-{nalt + 1} with Δχ² < {alt_max_dchi2:g}, not sky/unassigned)')
 
+    #- only TARGETID is required: other columns fall back (to None, '', or the
+    #- per-exposure EXPTIME/FIBERSTATUS and NUMEXP=1 for uncoadded spectra)
     fm = sp.fibermap
     targets = []
     for i in range(nspec):
         r = fm[i]
+        col = lambda *names, default=None: fibermap_value(fm, i, *names, default=default)
         allclass, primary = target_classes(r)
+        fiber, tileid = col('FIBER'), col('TILEID')
+        fiberstatus = int(col('COADD_FIBERSTATUS', 'FIBERSTATUS', default=0))
         t = dict(
-            i=i, targetid=str(int(r['TARGETID'])), fiber=int(r['FIBER']) if 'FIBER' in fm.colnames else None,
-            tileid=int(r['TILEID']) if 'TILEID' in fm.colnames else None,
-            ra=round(float(r['TARGET_RA']), 6), dec=round(float(r['TARGET_DEC']), 6),
-            objtype=str(r['OBJTYPE']), morph=str(r['MORPHTYPE']).strip(),
+            i=i, targetid=str(int(r['TARGETID'])),
+            fiber=None if fiber is None else int(fiber), tileid=None if tileid is None else int(tileid),
+            ra=_num(col('TARGET_RA'), 6), dec=_num(col('TARGET_DEC'), 6),
+            objtype=str(col('OBJTYPE', default='')), morph=str(col('MORPHTYPE', default='')).strip(),
             classes=allclass, primary=primary,
-            mag={k: mag(r[f'FLUX_{k.upper()}']) for k in ('g', 'r', 'z', 'w1', 'w2')},
-            fibermag_r=mag(r['FIBERFLUX_R']),
-            ebv=round(float(r['EBV']), 3),
-            exptime=round(float(r['COADD_EXPTIME']), 1), numexp=int(r['COADD_NUMEXP']),
-            fiberstatus=int(r['COADD_FIBERSTATUS']),
-            fiberstatus_names=(fibermask.names(int(r['COADD_FIBERSTATUS'])) if fibermask else []),
+            mag={k: mag(col(f'FLUX_{k.upper()}')) for k in ('g', 'r', 'z', 'w1', 'w2')},
+            fibermag_r=mag(col('FIBERFLUX_R')),
+            ebv=_num(col('EBV'), 3),
+            exptime=_num(col('COADD_EXPTIME', 'EXPTIME'), 1), numexp=int(col('COADD_NUMEXP', default=1)),
+            fiberstatus=fiberstatus,
+            fiberstatus_names=(fibermask.names(fiberstatus) if fibermask else []),
             snr={b: (round(float(snr[b][i]), 2) if np.isfinite(snr[b][i]) else None) for b in sp.bands},
             #- cameras with no unmasked pixels for this spectrum: [lo, hi, band]
             masked_cams=[[float(sp.wave[b][0]), float(sp.wave[b][-1]), b] for b in bands

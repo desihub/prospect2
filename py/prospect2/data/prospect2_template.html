@@ -378,6 +378,7 @@ table.mags td { padding: 2px; font-weight: 600; }
         Deep link: <code>#q=…</code></td></tr>
       <tr><td><kbd>?</kbd> / <kbd>Esc</kbd></td><td>show / hide this help</td></tr>
     </table>
+    <div id="provenance" hidden><h3>Made from</h3><table id="provtab"></table></div>
   </div>
 </div>
 
@@ -654,7 +655,7 @@ function renderList() {
   L.innerHTML = S.order.map(i => {
     const t = T[i], v = S.vi[t.targetid];
     return `<div class="item${i === S.cur ? " sel" : ""}" data-i="${i}" role="option" aria-selected="${i === S.cur}">
-      <div class="a num">${t.fiber ?? i} ${badges(t, 2)}</div>
+      <div class="a num">${t.fiber ?? "#" + i} ${badges(t, 2)}</div>
       <div class="z num">${noFit(t) ? "" : `z ${fmt(t.z, 4)}`}</div>
       <div class="b">${noFit(t) ? "no redrock fit" : `${esc(t.spectype ?? "")}${t.subtype ? " " + esc(t.subtype) : ""} · ΔΧ² ${fmt(t.deltachi2, 0)}`}</div>
       <div class="meta">${t.zwarn ? `<span class="status bad">${ICON_BAD}</span>` : ""}${v ? `<span class="vi-dot q${v.q}">${v.q}</span>` : ""}</div>
@@ -1062,7 +1063,7 @@ function renderPanels() {
 /* ================= info panels ================= */
 function renderInfo() {
   const i = S.cur, t = T[i], zz = zcur(i);
-  $("t-title").textContent = t.objtype === "SKY" ? `Sky fiber ${t.fiber}` : isUnassigned(t) ? `Unassigned fiber ${t.fiber}` : `Fiber ${t.fiber ?? i}`;
+  $("t-title").textContent = t.fiber == null ? `Spectrum ${i}` : t.objtype === "SKY" ? `Sky fiber ${t.fiber}` : isUnassigned(t) ? `Unassigned fiber ${t.fiber}` : `Fiber ${t.fiber}`;
   $("t-sub").innerHTML = `<span class="mono">${t.targetid}</span> · tile ${t.tileid ?? "—"}`;
   $("t-badges").innerHTML = badges(t, 9);
   const snr = Object.entries(t.snr).map(([b, v]) => `${b} ${fmt(v, 1)}`).join(" · ");
@@ -1073,7 +1074,7 @@ function renderInfo() {
     ["Quality", zwarnFact(t)],
     ...(t.fits && !noFit(t) ? [["Redrock fit", `<span class="fitstep"><button class="iconbtn" data-fit="-1" title="previous fit (&lt;)">‹</button><span class="num">${fitOf(i) + 1} / ${t.fits.length}</span><button class="iconbtn" data-fit="1" title="next fit (&gt;)">›</button></span>`]] : []),
     ["Median S/N per pixel", `<span class="num" style="font-weight:500">${snr}</span>`],
-    ["Exposure", `<span class="num">${fmt(t.exptime, 0)} s</span> <span style="color:var(--muted);font-weight:400">(${t.numexp} exp)</span>`],
+    ["Exposure", `<span class="num">${t.exptime == null ? "—" : fmt(t.exptime, 0) + " s"}</span> <span style="color:var(--muted);font-weight:400">(${t.numexp} exp)</span>`],
   ].map(([k, v]) => `<div class="fact"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
   $("facts").querySelectorAll("[data-fit]").forEach(b => b.onclick = () => stepFit(+b.dataset.fit));
 
@@ -1089,12 +1090,15 @@ function renderInfo() {
     : zz !== zpipe(i) ? `trial z = ${zz.toFixed(5)}  (Δv = ${dv(zz, zpipe(i))} km/s vs pipeline)` : "";
 
   // right column
-  const ra = t.ra, dec = t.dec;
-  $("radec").textContent = `${ra.toFixed(5)}, ${dec >= 0 ? "+" : ""}${dec.toFixed(5)}`;
-  $("lsv").href = `https://www.legacysurvey.org/viewer?ra=${ra}&dec=${dec}&layer=ls-dr9&zoom=16&mark=${ra},${dec}`;
-  const img = $("cut"); $("cutmsg").hidden = true; img.hidden = false;
-  img.onerror = () => { img.hidden = true; $("cutmsg").hidden = false; $("cutmsg").textContent = "Cutout unavailable (offline?)"; };
-  img.src = `https://www.legacysurvey.org/viewer/cutout.jpg?ra=${ra}&dec=${dec}&layer=ls-dr9&pixscale=0.262&size=256`;
+  const ra = t.ra, dec = t.dec, img = $("cut"), hasRD = ra != null && dec != null;
+  $("radec").textContent = hasRD ? `${ra.toFixed(5)}, ${dec >= 0 ? "+" : ""}${dec.toFixed(5)}` : "no coordinates";
+  $("lsv").hidden = !hasRD;
+  img.closest(".cutout").hidden = !hasRD; img.hidden = !hasRD; $("cutmsg").hidden = true;
+  if (hasRD) {
+    $("lsv").href = `https://www.legacysurvey.org/viewer?ra=${ra}&dec=${dec}&layer=ls-dr9&zoom=16&mark=${ra},${dec}`;
+    img.onerror = () => { img.hidden = true; $("cutmsg").hidden = false; $("cutmsg").textContent = "Cutout unavailable (offline?)"; };
+    img.src = `https://www.legacysurvey.org/viewer/cutout.jpg?ra=${ra}&dec=${dec}&layer=ls-dr9&pixscale=0.262&size=256`;
+  } else img.removeAttribute("src");
 
   const bands = ["g", "r", "z", "w1", "w2"];
   $("mags").innerHTML = `<tr>${bands.map(b => `<th>${b.toUpperCase()}</th>`).join("")}<th>fib r</th></tr><tr>${bands.map(b => `<td>${fmt(t.mag[b])}</td>`).join("")}<td>${fmt(t.fibermag_r)}</td></tr>`;
@@ -1147,7 +1151,7 @@ function renderGallery() {
   $("gcount").textContent = `${S.order.length} spectra`;
   $("cards").innerHTML = S.order.map(i => { const t = T[i], v = S.vi[t.targetid];
     return `<div class="card gcard${i === S.cur ? " sel" : ""}" data-i="${i}">
-      <div class="gh"><span class="num"><b>${t.fiber ?? i}</b> ${badges(t)}</span>${zwarnBadge(t)}</div>
+      <div class="gh"><span class="num"><b>${t.fiber ?? "#" + i}</b> ${badges(t)}</span>${zwarnBadge(t)}</div>
       <canvas></canvas>
       <div class="gf num"><span>${noFit(t) ? "no redrock fit" : `${esc(t.spectype ?? "")} z=${fmt(t.z, 4)}`}</span><span>${noFit(t) ? "" : `ΔΧ² ${fmt(t.deltachi2, 0)}`}${v ? ` <span class="vi-dot q${v.q}">${v.q}</span>` : ""}</span></div></div>`; }).join("");
   const cards = [...$("cards").querySelectorAll(".gcard")];
@@ -1291,6 +1295,12 @@ document.addEventListener("keydown", e => {
 /* ================= boot ================= */
 (async () => {
   $("srcname").textContent = D.title;
+  // input files: hover on the page name, and in the help overlay (no screen space otherwise)
+  const prov = [["source", D.source], ["redrock", D.redrock], ["model", D.model_source],
+                ["alternate fits", D.rrdetails]].filter(([, v]) => v);
+  $("srcname").title = prov.filter(([k, v]) => k !== "source" || v !== D.title).map(([k, v]) => `${k}: ${v}`).join("\n");
+  $("provtab").innerHTML = prov.map(([k, v]) => `<tr><td>${k}</td><td class="mono">${esc(v)}</td></tr>`).join("");
+  $("provenance").hidden = !prov.length;
   [FLUX, NOISE, MODEL, AMODEL] = await decodeQ2();
   if (MODEL) MHIDE = fillMaskedModel(MODEL, FLUX);
   if (AMODEL) {

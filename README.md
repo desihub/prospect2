@@ -28,7 +28,11 @@ prospect2.write_html(html, 'mypage.html')
 versions agree), plus optional `zcat`, `models` and `fits` (alternate fits from `read_rrdetails`),
 each row-matched to the spectra. `zcat` and `models` default to `spectra.redshifts` and
 `spectra.model`; explicit arguments override them. Without models, they are computed from the
-redrock templates.
+redrock templates. Only the flux and a fibermap with TARGETID are required: other fibermap
+columns (coordinates, photometry, `COADD_*`, …) are shown as "—" when missing, and per-exposure
+`EXPTIME`/`FIBERSTATUS` are used for uncoadded spectra. `provenance=dict(source=, redrock=,
+model_source=, rrdetails=)` (all optional) names the input files; they are shown on hover over the
+page name and in the `?` help.
 
 Output name: `coadd-X.fits[.gz]` (or `spectra-X.fits[.gz]`) → `prospect-X.html`, written to the
 current directory, or into `-o DIR` if that is an existing directory or ends in `/`. This default is

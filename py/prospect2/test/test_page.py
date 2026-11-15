@@ -47,6 +47,45 @@ def test_source_never_null(sp):
     assert p['title'] == 'My page' and p['source'] == 'coadd-x.fits'
 
 
+def test_minimal_fibermap(sp):
+    #- only TARGETID is required; other columns fall back to None / '' / defaults
+    from astropy.table import Table
+    sp2 = sp[:]
+    sp2.fibermap = Table(dict(TARGETID=sp.fibermap['TARGETID']))
+    p = make_payload(sp2, **NOALT)
+    t = p['targets'][0]
+    assert t['targetid'] == str(TARGETID0) and t['fiber'] is None and t['tileid'] is None
+    assert t['ra'] is None and t['dec'] is None and t['ebv'] is None and t['exptime'] is None
+    assert t['objtype'] == '' and t['morph'] == '' and t['mag']['r'] is None and t['fibermag_r'] is None
+    assert t['numexp'] == 1 and t['fiberstatus'] == 0
+    json.dumps(p)
+    #- with a zcat and models too
+    p = make_payload(sp2, zcat=synthetic_zcat(sp2), models=synthetic_models(sp2), **NOALT)
+    assert p['targets'][0]['z'] == 0.5
+
+
+def test_uncoadded_fibermap(sp):
+    #- per-exposure spectra: EXPTIME / FIBERSTATUS instead of COADD_*, a single exposure
+    sp2 = sp[:]
+    fm = sp2.fibermap.copy()
+    fm['EXPTIME'] = 900.0
+    fm['FIBERSTATUS'] = 0
+    fm['FIBERSTATUS'][1] = 2
+    fm.remove_columns(['COADD_EXPTIME', 'COADD_NUMEXP', 'COADD_FIBERSTATUS'])
+    sp2.fibermap = fm
+    t = make_payload(sp2, **NOALT)['targets']
+    assert t[0]['exptime'] == 900.0 and t[0]['numexp'] == 1 and t[0]['fiberstatus'] == 0
+    assert t[1]['fiberstatus'] == 2
+
+
+def test_targetid_required(sp):
+    sp2 = sp[:]
+    sp2.fibermap = sp.fibermap.copy()
+    sp2.fibermap.remove_column('TARGETID')
+    with pytest.raises(ValueError, match='TARGETID'):
+        make_payload(sp2, **NOALT)
+
+
 def test_payload_data_roundtrip(sp):
     p = make_payload(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp, 2.0), **NOALT)
     flux, noise, model, _ = decode_q2(p)

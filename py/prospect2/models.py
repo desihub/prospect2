@@ -12,6 +12,8 @@ camera's resolution, and merged across cameras with the flux's ivar weights.
 import os
 import numpy as np
 
+from .util import fibermap_value
+
 
 def load_redrock_templates(template_dir=None, zcat_header=None):
     """
@@ -76,7 +78,8 @@ def alt_fit_models(sp, wave, zcat, fits, fitlists, nalt=2, max_dchi2=100):
     """
     Redrock models for alternate fits, computed from the rrdetails templates + coeff, convolved with
     each camera's resolution and merged like the best-fit model.  Only fits ranked 2..nalt+1 with
-    chi2 - best chi2 < max_dchi2 get a model; sky and unassigned fibers (OBJTYPE != TGT) never do.
+    chi2 - best chi2 < max_dchi2 get a model; sky and unassigned fibers (OBJTYPE != TGT, or
+    TARGETID < 0 if there is no OBJTYPE column) never do.
     `fits` is the per-spectrum list of raw rrdetails records (see prospect2.io.read_rrdetails) and
     `fitlists` the matching display lists; appends the model's row index to each such fit's entry
     in `fitlists` (in place).
@@ -87,7 +90,8 @@ def alt_fit_models(sp, wave, zcat, fits, fitlists, nalt=2, max_dchi2=100):
     for i, d in enumerate(fits):
         if d is None or fitlists[i] is None:
             continue
-        if str(sp.fibermap['OBJTYPE'][i]).strip() != 'TGT':
+        objtype = fibermap_value(sp.fibermap, i, 'OBJTYPE')
+        if (str(objtype).strip() != 'TGT') if objtype is not None else (sp.fibermap['TARGETID'][i] < 0):
             continue
         for k in range(1, min(nalt + 1, len(d))):
             if d['chi2'][k] - d['chi2'][0] < max_dchi2:

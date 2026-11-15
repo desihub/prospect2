@@ -49,18 +49,17 @@ def _chrome():
     return None
 
 
-def test_page_loads_and_decodes(tmp_path):
+def _run_page(html, inject, tmp_path):
+    """
+    Load `html` with the script `inject` added before </body> in headless
+    Chrome; assert no JS errors; return the JSON that the script logged as
+    "P2CHECK <json>".
+    """
     chrome = _chrome()
     if chrome is None:
         pytest.skip('no Chrome found (set $CHROME)')
-    sp = synthetic_spectra(nspec=3)
-    sp.ivar['z'][1] = 0                   #- a masked camera
-    for b in sp.bands:                    #- and a spectrum with no data
-        sp.ivar[b][2] = 0
-    html = make_html(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp, 1.5), alt_models=0)
     page = tmp_path / 'page.html'
-    check = CHECK_JS.replace('__FIBERLISTS__', json.dumps(FIBERLISTS)).replace('__TIDTOKENS__', json.dumps(TIDTOKENS))
-    page.write_text(html.replace('</body>', check, 1), encoding='utf-8')
+    page.write_text(html.replace('</body>', inject, 1), encoding='utf-8')
 
     #- no --user-data-dir: with it, headless Chrome on macOS hangs instead of exiting
     cmd = [chrome, '--headless=new', '--disable-gpu',
@@ -71,8 +70,18 @@ def test_page_loads_and_decodes(tmp_path):
     errors = [line for line in console if 'Uncaught' in line or 'Error' in line]
     assert not errors, '\n'.join(errors)
     m = re.search(r'"P2CHECK (.*)", source', out)
-    assert m, 'page did not report decoded data:\n' + '\n'.join(console)
-    js = json.loads(m.group(1))
+    assert m, 'page did not report its check:\n' + '\n'.join(console)
+    return json.loads(m.group(1))
+
+
+def test_page_loads_and_decodes(tmp_path):
+    sp = synthetic_spectra(nspec=3)
+    sp.ivar['z'][1] = 0                   #- a masked camera
+    for b in sp.bands:                    #- and a spectrum with no data
+        sp.ivar[b][2] = 0
+    html = make_html(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp, 1.5), alt_models=0)
+    check = CHECK_JS.replace('__FIBERLISTS__', json.dumps(FIBERLISTS)).replace('__TIDTOKENS__', json.dumps(TIDTOKENS))
+    js = _run_page(html, check, tmp_path)
 
     flux, _, model, _ = decode_q2(payload_from_html(html))
     for name, arr in (('flux', flux), ('model', model)):
@@ -90,3 +99,33 @@ def test_page_loads_and_decodes(tmp_path):
     #- documented difference: in the filter box, numbers >= 5000 or < 0 are TARGETIDs
     for tok, ids in zip(TIDTOKENS, js['tids']):
         assert ids == {'fibers': [], 'tids': [tok]}, tok
+
+
+#- reports what the info panel and help overlay show
+INFO_JS = """<script>
+setTimeout(() => {
+  console.log("P2CHECK " + JSON.stringify({radec: $("radec").textContent, cut: $("cut").closest(".cutout").hidden,
+    title: $("t-title").textContent, prov: $("provtab").textContent, provHidden: $("provenance").hidden,
+    tooltip: $("srcname").title}));
+}, 3000);
+</script>
+</body>"""
+
+
+def test_minimal_fibermap_page(tmp_path):
+    #- TARGETID-only fibermap: the page still works, without coordinates or cutout
+    from astropy.table import Table
+    sp = synthetic_spectra(nspec=2)
+    sp.fibermap = Table(dict(TARGETID=sp.fibermap['TARGETID']))
+    js = _run_page(make_html(sp, alt_models=0), INFO_JS, tmp_path)
+    assert js['radec'] == 'no coordinates' and js['cut'] and js['title'] == 'Spectrum 1'
+    assert js['provHidden'] is False and js['prov'] == 'sourceprospect2' and js['tooltip'] == ''
+
+
+def test_provenance_display(tmp_path):
+    sp = synthetic_spectra(nspec=2)
+    prov = dict(source='coadd-x.fits', redrock='redrock-x.fits', model_source='rrmodel-x.fits')
+    html = make_html(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp), provenance=prov, alt_models=0)
+    js = _run_page(html, INFO_JS, tmp_path)
+    assert js['tooltip'] == 'redrock: redrock-x.fits\nmodel: rrmodel-x.fits'
+    assert js['prov'] == 'sourcecoadd-x.fitsredrockredrock-x.fitsmodelrrmodel-x.fits'

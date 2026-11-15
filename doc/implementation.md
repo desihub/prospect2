@@ -63,8 +63,18 @@ User decisions:
   lists, ≈-duplicate marks and sky exclusion are computed in `make_payload`.
 - `make_payload` (dict) and `render_html` (str) are separate, so the payload can be tested without
   parsing HTML.
-- File names for the page come from `provenance=dict(source, redrock, model_source, rrdetails)`.
-  Only `source` is used by the viewer today (see "Payload contents").
+- *Only what's needed to plot is required* (user, 2026-11-15): wave/flux/ivar and a fibermap
+  with TARGETID. TARGETID stays required because it row-matches the zcat and keys the VI, the
+  filter and deep links; made-up IDs would let VI from different pages collide. Every other
+  fibermap column is optional (`util.fibermap_value`): missing values become None/'' and show as
+  "—"; `COADD_EXPTIME`/`COADD_FIBERSTATUS` fall back to the per-exposure `EXPTIME`/`FIBERSTATUS`;
+  missing `COADD_NUMEXP` means 1 exposure (user); missing `OBJTYPE` means "target" if TARGETID ≥ 0;
+  no `FIBER` shows the row as "Spectrum i" / "#i", never as a fiber number; no coordinates hide
+  the cutout and Legacy Viewer link.
+- File names for the page come from `provenance=dict(source, redrock, model_source, rrdetails)`,
+  all optional. They are shown without using screen space (user, 2026-11-15): as a tooltip on
+  the page name in the header, and under "Made from" in the `?` help overlay (the header name is
+  hidden on narrow screens).
 
 ## Tests
 
@@ -189,7 +199,7 @@ Top level (`D.x`):
 |---|---|
 | `title` | page title: `title` argument, else `provenance['source']`, else `'prospect2'` |
 | `source` | input file name, else `title`; never null. Keys the VI in localStorage and names the VI export |
-| `redrock`, `model_source`, `rrdetails` | provenance file names (or `'input models'`, `'redrock templates + COEFF'`); stored but not yet displayed by the JS |
+| `redrock`, `model_source`, `rrdetails` | provenance file names (or `'input models'`, `'redrock templates + COEFF'`), or null; shown in the header tooltip and help overlay |
 | `wave0`, `dwave`, `nwave` | the merged linear wavelength grid (`coadd_cameras`); JS `WAVE`, `NW` |
 | `nspec`, `flux_unit` | number of spectra; flux unit label |
 | `targets` | one dict per spectrum, row order = data rows (below) |
@@ -199,11 +209,11 @@ Top level (`D.x`):
 | `amodel`, `amscale`, `alt_models` | only when alternate-fit models exist: their rows, and the `--alt-models`/`--alt-max-dchi2` settings |
 
 `targets[i]` (JS `T[i]`), all plain JSON:
-- Always: `i`, `targetid` (**string**, int64 > 2^53), `fiber`, `tileid` (null if the fibermap
-  lacks the column), `ra`, `dec`, `objtype`, `morph`, `classes`/`primary` (target-bit names),
-  `mag` (`{g, r, z, w1, w2}`), `fibermag_r`, `ebv`, `exptime`, `numexp`, `fiberstatus`,
-  `fiberstatus_names`, `snr` (`{band: median S/N}`), `masked_cams` (`[lo, hi, band]` for cameras
-  with no unmasked pixels).
+- Always: `i`, `targetid` (**string**, int64 > 2^53), `fiber`, `tileid`, `ra`, `dec`, `objtype`,
+  `morph`, `classes`/`primary` (target-bit names), `mag` (`{g, r, z, w1, w2}`), `fibermag_r`,
+  `ebv`, `exptime`, `numexp`, `fiberstatus`, `fiberstatus_names`, `snr` (`{band: median S/N}`),
+  `masked_cams` (`[lo, hi, band]` for cameras with no unmasked pixels). Values from optional
+  fibermap columns can be null (strings: `''`), so the JS must handle that; see "Python API".
 - With a zcat: `z`, `zerr`, `zwarn`, `zwarn_names`, `spectype`, `subtype`, `deltachi2`, `chi2`,
   `npixels`. Absent, not null, without one. Redrock's no-fit placeholders are kept raw; see
   "Degenerate spectra".
@@ -216,7 +226,8 @@ Decoded arrays: `FLUX`, `NOISE`, `MODEL` are `Float32Array(nspec·NW)`, row *i* 
 model pixels to hide (see "Masked model rule").
 
 **Recipes:**
-- *New per-target value:* add it to the `t = dict(...)` in `make_payload` and read `T[i].key` in
+- *New per-target value:* add it to the `t = dict(...)` in `make_payload`, reading fibermap
+  columns with `col(...)` (`fibermap_value`) so a missing column gives null, and read `T[i].key` in
   the JS; no template placeholder is needed. Show it in `renderInfo()`; to filter on it, add it to
   `FIELDS` (numeric comparisons) or to the label string in `compileTerm` (substring match), and
   update the filter help in the template and README. Test it in `test_page.py`. Nothing checks

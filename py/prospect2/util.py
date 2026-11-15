@@ -34,6 +34,19 @@ def parse_fiberlist(spec):
     return np.array(fibers, dtype=int)
 
 
+def fibermap_value(fibermap, i, *names, default=None):
+    """
+    Row `i` of the first of the columns `names` that `fibermap` has, else
+    `default` (also for a masked value).  Only TARGETID is required to make a
+    page; every other fibermap column it reads is optional, via this function.
+    """
+    for name in names:
+        if name in fibermap.colnames:
+            value = fibermap[name][i]
+            return default if np.ma.is_masked(value) else value
+    return default
+
+
 def select_spectra(fibermap, fibers=None, targetids=None):
     """
     Boolean mask of the fibermap rows to keep: the union of `fibers` (a list
