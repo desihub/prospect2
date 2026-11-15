@@ -8,6 +8,8 @@ main plot, plain canvas for thumbnails) plus a compact gzip+base64 float16
 data payload.  No Bokeh, no server, works offline.
 
 Usage:
+    python make_prospect2.py -i coadd-4-1496-thru20240214.fits    # -> ./prospect-4-1496-thru20240214.html
+    python make_prospect2.py -i coadd-4-1496-thru20240214.fits -o outdir/
     python make_prospect2.py -i coadd-4-1496-thru20240214.fits \
         -o example-20.html -f 2000:2020
 """
@@ -266,6 +268,53 @@ def merge_camera_models(sp, models, wave):
     return np.where(den > 0, num / np.where(den > 0, den, 1), msum / np.maximum(cnt, 1))
 
 
+def default_outfile(infile):
+    """
+    Default output basename for a page holding every spectrum in `infile`:
+    coadd-X.fits[.gz] or spectra-X.fits[.gz] -> prospect-X.html.  None if the
+    input name doesn't follow that pattern.
+    """
+    base = os.path.basename(infile)
+    for ext in ('.fits.gz', '.fits'):
+        if base.endswith(ext):
+            base = base[:-len(ext)]
+            break
+    else:
+        return None
+    for prefix in ('coadd-', 'spectra-'):
+        if base.startswith(prefix) and len(base) > len(prefix):
+            return 'prospect-' + base[len(prefix):] + '.html'
+    return None
+
+
+def resolve_outfile(outarg, infile, subset):
+    """
+    Output file path from the -o argument (None if not given).  cp-style: an
+    existing directory or a path ending in '/' is a directory, which gets the
+    default name; anything else is a file name.  Raises ValueError with a message
+    explaining why a file name is needed if the default name can't be used.
+    Warns if an explicit file name doesn't end in .html/.htm.
+    """
+    if outarg is not None and not (outarg.endswith(os.sep) or os.path.isdir(outarg)):
+        if not outarg.lower().endswith(('.html', '.htm')):
+            print(f"WARNING: output {outarg} doesn't end in .html; writing it as a file "
+                  f"(use {outarg}/ for a directory)")
+        return outarg
+
+    where = 'no -o was given' if outarg is None else f'-o {outarg} is a directory'
+    name = default_outfile(infile)
+    if subset:
+        dflt = f' {name}' if name else ''
+        raise ValueError(f'{where}, but -f/-t select a subset of the spectra in '
+                         f'{os.path.basename(infile)}, so the default name{dflt} (reserved for pages '
+                         f'with every spectrum in the input) does not apply; give -o FILE.html')
+    if name is None:
+        raise ValueError(f"{where}, but can't derive an output name from {os.path.basename(infile)}: "
+                         f"default names map coadd-*.fits or spectra-*.fits to prospect-*.html; "
+                         f"give -o FILE.html")
+    return os.path.join(outarg, name) if outarg else name
+
+
 def parse_fiberlist(spec):
     """
     "10,20,30-40,50:60" -> [10, 20, 30..40, 50..59]: "a-b" is inclusive,
@@ -333,7 +382,11 @@ def target_classes(row):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('-i', '--infile', required=True, help='input coadd/spectra file')
-    p.add_argument('-o', '--outfile', required=True, help='output html file')
+    p.add_argument('-o', '--outfile', default=None,
+                   help='output html file, or directory (existing, or ending in "/"; created if '
+                        'needed) for the default name: coadd-X.fits -> prospect-X.html, in the '
+                        'current directory if -o is not given.  The default name is only used '
+                        'without -f/-t (pages with every input spectrum)')
     p.add_argument('-f', '--fibers', help='fibers, e.g. 10,20,30-40,50:60 (a-b inclusive, a:b excludes b)')
     p.add_argument('-t', '--targetids', help='comma-separated TARGETIDs (combined with -f as a union)')
     p.add_argument('--title', default=None)
@@ -352,6 +405,16 @@ def main():
                    help='store the model in steps of (median data noise)/N; default %(default)s. '
                         '1000 is visually lossless even zoomed+smoothed (~+1.2 MB per 500 spectra)')
     args = p.parse_args()
+
+    #- resolve the output before the slow read, so naming errors are immediate
+    try:
+        outfile = resolve_outfile(args.outfile, args.infile, subset=bool(args.fibers or args.targetids))
+    except ValueError as err:
+        p.error(str(err))
+    outdir = os.path.dirname(outfile)
+    if outdir and not os.path.isdir(outdir):
+        os.makedirs(outdir)
+        print(f'INFO: Created directory {outdir}')
 
     sp = read_spectra(args.infile)
 
@@ -510,9 +573,10 @@ def main():
                     .replace('/*__UPLOT_JS__*/', uplot_js)
                     .replace('"__DATA__"', json.dumps(payload, separators=(',', ':')))
                     .replace('__TITLE__', payload['title']))
-    with open(args.outfile, 'w', encoding='utf-8') as fx:
+    verb = 'Overwrote existing' if os.path.exists(outfile) else 'Wrote'
+    with open(outfile, 'w', encoding='utf-8') as fx:
         fx.write(html)
-    print(f'Wrote {args.outfile}: {os.path.getsize(args.outfile)/1e6:.2f} MB, {sp.num_spectra()} spectra')
+    print(f'{verb} {outfile}: {os.path.getsize(outfile)/1e6:.2f} MB, {sp.num_spectra()} spectra')
 
 
 if __name__ == '__main__':

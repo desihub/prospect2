@@ -37,7 +37,7 @@ cd ~/desi/dev/prospect2
 ~/miniforge3/envs/desi/bin/python make_prospect2.py -i scratch/data/coadd-4-1496-thru20240214.fits \
     -o scratch/output/example-20.html -f 2000:2020
 ~/miniforge3/envs/desi/bin/python make_prospect2.py -i scratch/data/coadd-4-1496-thru20240214.fits \
-    -o scratch/output/prospect-4-1496-thru20240214.html
+    -o scratch/output/
 ```
 
 Note that `-f 2000-2020` is *inclusive* (21 fibers); this differs from desispec. After changing

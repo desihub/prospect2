@@ -1,11 +1,20 @@
 # prospect2 prototype
 
 ```
-python make_prospect2.py -i coadd-4-1496-thru20240214.fits -o prospect-4-1496-thru20240214.html
+python make_prospect2.py -i coadd-4-1496-thru20240214.fits                 # -> ./prospect-4-1496-thru20240214.html
+python make_prospect2.py -i coadd-4-1496-thru20240214.fits -o outdir/       # -> outdir/prospect-4-1496-thru20240214.html
+python make_prospect2.py -i coadd-4-1496-thru20240214.fits -f 2000:2020 -o example-20.html
 ```
 
 Matching `redrock-*.fits`, `rrmodel-*.fits` and `rrdetails-*.h5` files are found next to the coadd.
 Use `-f`/`-t` to select a subset (see below).
+
+Output name: `coadd-X.fits[.gz]` (or `spectra-X.fits[.gz]`) → `prospect-X.html`, written to the
+current directory, or into `-o DIR` if that is an existing directory or ends in `/`. This default is
+reserved for pages with every spectrum in the input, so with `-f`/`-t`, or an input named
+differently, `-o FILE.html` is required. Any other `-o` is a file name (warning if it doesn't end in
+`.html`/`.htm`). Missing directories are created; existing files are overwritten (and the log says
+so).
 
 Page sizes for petal 4, tile 1496:
 

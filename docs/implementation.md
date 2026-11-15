@@ -89,6 +89,24 @@ in resolution, which is fine for display, and avoids shipping templates to the b
 - `parse_fiberlist` replaces desispec's `parse_fibers`, where `a-b` excludes b.
 - `-f` and `-t` select the union.
 
+**Output name defaults to `prospect-X.html` in the current directory** (from `coadd-X.fits` or
+`spectra-X.fits`, `.gz` optional; `default_outfile`, `resolve_outfile`). User decisions,
+2026-11-14:
+- *Current directory, not next to the input:* production inputs are read-only.
+- *Only for 1:1 pages:* the `prospect-X.html` name promises every spectrum of `coadd-X.fits`.
+  With `-f`/`-t` (decided on the flags, not the result) or an input with another name, `-o FILE`
+  is required, and the error says why. No auto-names like `prospect-X-f2000-2019.html`.
+- *`-o` is cp-style:* an existing directory or a trailing `/` means a directory, which gets the
+  default name; anything else is a file. An extension-based rule (no `.html` → directory) was
+  rejected, because with auto-created directories a typo like `page.htlm` would make a directory.
+  Instead, a file name not ending in `.html`/`.htm` gets a warning. `.html.gz` is not special:
+  browsers don't decompress `file://` gz pages.
+- *Missing directories are created* (DESI convention, cf. `desispec.io.util.makepath`, though most
+  Unix tools would fail), with an `INFO: Created directory` line so typos are visible.
+- *Existing files are overwritten* (regenerating is the common case), logged as `Overwrote
+  existing …` instead of `Wrote …`.
+- Naming errors are raised before `read_spectra`, so they are immediate.
+
 ## Payload encoding ("q2")
 
 The payload is gzip + base64, decoded in the browser with `DecompressionStream`. The example page
