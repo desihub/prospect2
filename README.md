@@ -1,9 +1,11 @@
 # prospect2 prototype
 
+With `bin/` on `$PATH` and `py/` on `$PYTHONPATH` (no installation needed):
+
 ```
-python make_prospect2.py -i coadd-4-1496-thru20240214.fits                 # -> ./prospect-4-1496-thru20240214.html
-python make_prospect2.py -i coadd-4-1496-thru20240214.fits -o outdir/       # -> outdir/prospect-4-1496-thru20240214.html
-python make_prospect2.py -i coadd-4-1496-thru20240214.fits -f 2000:2020 -o example-20.html
+plot_prospect2 -i coadd-4-1496-thru20240214.fits                 # -> ./prospect-4-1496-thru20240214.html
+plot_prospect2 -i coadd-4-1496-thru20240214.fits -o outdir/       # -> outdir/prospect-4-1496-thru20240214.html
+plot_prospect2 -i coadd-4-1496-thru20240214.fits -f 2000:2020 -o example-20.html
 ```
 
 Matching `redrock-*.fits`, `rrmodel-*.fits` and `rrdetails-*.h5` files are found next to the coadd.
@@ -38,13 +40,14 @@ a fiber/TARGETID list (no spaces inside it), or a case-insensitive text match on
 
 Dependencies: numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
 optionally desitarget for target-bit names. No dependency on prospect: the line lists
-(`data/{emission,absorption}_lines.txt`) and `load_redrock_templates` were copied from it.
+(`py/prospect2/data/{emission,absorption}_lines.txt`) and `load_redrock_templates` were copied from it.
 License: BSD 3-clause (`LICENSE.rst`), same as prospect.
 
 ## Architecture
 
-* Python (`make_prospect2.py`) builds a JSON payload; the HTML template (`prospect2_template.html`)
-  is a small hand-written JS app plus inlined uPlot (50 KB, `vendor/`). No Bokeh, no server.
+* Python (`bin/plot_prospect2` → `py/prospect2/scripts/plot_prospect2.py`) builds a JSON payload;
+  the HTML template (`py/prospect2/data/prospect2_template.html`) is a small hand-written JS app
+  plus inlined uPlot (50 KB, `py/prospect2/data/vendor/`). No Bokeh, no server.
 * Cameras merged with `desispec.coaddition.coadd_cameras`. Per-camera redrock models come from the
   matching `rrmodel*.fits` (`redrock-X.fits` → `rrmodel-X.fits`, rows matched by TARGETID, wavelength
   grids checked) if present, else are computed from templates + COEFF (`camera_models`; forced with

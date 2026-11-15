@@ -1,0 +1,14 @@
+#!/usr/bin/env python
+#
+# See top-level LICENSE.rst file for Copyright information
+
+"""
+Generate an offline prospect2 HTML viewer page for DESI spectra.
+"""
+
+import sys
+from prospect2.scripts import plot_prospect2
+
+if __name__ == '__main__':
+    args = plot_prospect2.parse()
+    sys.exit(plot_prospect2.main(args))

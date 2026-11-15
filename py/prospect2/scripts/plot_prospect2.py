@@ -7,10 +7,10 @@ Writes a single self-contained HTML file: a small custom JS app (uPlot for the
 main plot, plain canvas for thumbnails) plus a compact gzip+base64 float16
 data payload.  No Bokeh, no server, works offline.
 
-Usage:
-    python make_prospect2.py -i coadd-4-1496-thru20240214.fits    # -> ./prospect-4-1496-thru20240214.html
-    python make_prospect2.py -i coadd-4-1496-thru20240214.fits -o outdir/
-    python make_prospect2.py -i coadd-4-1496-thru20240214.fits \
+Usage (with bin/ on $PATH and py/ on $PYTHONPATH):
+    plot_prospect2 -i coadd-4-1496-thru20240214.fits    # -> ./prospect-4-1496-thru20240214.html
+    plot_prospect2 -i coadd-4-1496-thru20240214.fits -o outdir/
+    plot_prospect2 -i coadd-4-1496-thru20240214.fits \
         -o example-20.html -f 2000:2020
 """
 
@@ -23,7 +23,9 @@ from desispec.io import read_spectra
 from desispec.io.util import checkgzip
 from desispec.coaddition import coadd_cameras
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from importlib.resources import files
+
+DATADIR = files('prospect2') / 'data'
 
 
 def _b64gz(a):
@@ -343,8 +345,8 @@ def air_to_vac(air):
 def read_lines():
     lines = []
     for kind in ('emission', 'absorption'):
-        fn = os.path.join(HERE, 'data', f'{kind}_lines.txt')
-        for row in open(fn, encoding='utf-8'):
+        fn = DATADIR / f'{kind}_lines.txt'
+        for row in fn.read_text(encoding='utf-8').splitlines():
             if row.startswith('#') or not row.strip():
                 continue
             name, longname, lam, vac, major = [x.strip() for x in row.split(',')]
@@ -379,7 +381,12 @@ def target_classes(row):
     return names, primary
 
 
-def main():
+def parse(options=None):
+    """
+    Parse command-line `options` (list of str; default sys.argv[1:]).  Resolves
+    args.outfile to the output file path (see resolve_outfile), exiting with an
+    error message if no output name can be derived.
+    """
     p = argparse.ArgumentParser()
     p.add_argument('-i', '--infile', required=True, help='input coadd/spectra file')
     p.add_argument('-o', '--outfile', default=None,
@@ -404,13 +411,18 @@ def main():
     p.add_argument('--model-precision', type=float, default=100,
                    help='store the model in steps of (median data noise)/N; default %(default)s. '
                         '1000 is visually lossless even zoomed+smoothed (~+1.2 MB per 500 spectra)')
-    args = p.parse_args()
+    args = p.parse_args(options)
 
     #- resolve the output before the slow read, so naming errors are immediate
     try:
-        outfile = resolve_outfile(args.outfile, args.infile, subset=bool(args.fibers or args.targetids))
+        args.outfile = resolve_outfile(args.outfile, args.infile, subset=bool(args.fibers or args.targetids))
     except ValueError as err:
         p.error(str(err))
+    return args
+
+
+def main(args):
+    outfile = args.outfile
     outdir = os.path.dirname(outfile)
     if outdir and not os.path.isdir(outdir):
         os.makedirs(outdir)
@@ -566,9 +578,9 @@ def main():
         payload['amodel'], payload['amscale'] = encode_model(alt_model, noise[alt_rows], args.alt_model_precision)
         payload['alt_models'] = dict(n=nalt, max_dchi2=args.alt_max_dchi2)
 
-    template = open(os.path.join(HERE, 'prospect2_template.html'), encoding='utf-8').read()
-    uplot_js = open(os.path.join(HERE, 'vendor', 'uPlot.iife.min.js'), encoding='utf-8').read()
-    uplot_css = open(os.path.join(HERE, 'vendor', 'uPlot.min.css'), encoding='utf-8').read()
+    template = (DATADIR / 'prospect2_template.html').read_text(encoding='utf-8')
+    uplot_js = (DATADIR / 'vendor' / 'uPlot.iife.min.js').read_text(encoding='utf-8')
+    uplot_css = (DATADIR / 'vendor' / 'uPlot.min.css').read_text(encoding='utf-8')
     html = (template.replace('/*__UPLOT_CSS__*/', uplot_css)
                     .replace('/*__UPLOT_JS__*/', uplot_js)
                     .replace('"__DATA__"', json.dumps(payload, separators=(',', ':')))
@@ -580,4 +592,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main(parse()))

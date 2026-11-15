@@ -6,9 +6,17 @@ specific fiber that exposed a problem).
 
 ## Architecture
 
-**Python builds a data payload; a static hand-written JS app renders it.** `make_prospect2.py`
-reads the coadd/redrock files and writes one self-contained HTML file: `prospect2_template.html`
-with uPlot 1.6.31 (`vendor/`, ~50 KB) and the payload inlined.
+**Python builds a data payload; a static hand-written JS app renders it.** The generator
+(`bin/plot_prospect2` → `py/prospect2/scripts/plot_prospect2.py`) reads the coadd/redrock files and
+writes one self-contained HTML file: `prospect2_template.html` with uPlot 1.6.31 (`vendor/`,
+~50 KB) and the payload inlined.
+
+**Package layout follows desispec** (user decision, 2026-11-14): `bin/` wrappers without `.py`
+that call `prospect2.scripts.X.parse()` / `main(args)`; library code in `py/prospect2/`; files the
+code reads in `py/prospect2/data/`, found with `importlib.resources`, so it all works with
+`bin/` on `$PATH` and `py/` on `$PYTHONPATH`, without installation. The viewer template
+(`data/prospect2_template.html`) is really the app's source code, not data, but it lives in
+`data/` with the other package files so installed copies can find it.
 
 - *Why not patch Bokeh (the original prospect)?* The Bokeh page was 4.7 MB for 20 spectra plus
   CDN-loaded BokehJS, and its interaction model is hard to customize.
@@ -18,7 +26,7 @@ with uPlot 1.6.31 (`vendor/`, ~50 KB) and the payload inlined.
 - *Why uPlot?* It is tiny and fast for 500 × 7781-pixel spectra, and exposes canvas draw hooks for
   custom overlays (line markers, hatching).
 
-**No dependency on prospect.** The line lists (`data/{emission,absorption}_lines.txt`) and
+**No dependency on prospect.** The line lists (`py/prospect2/data/{emission,absorption}_lines.txt`) and
 `load_redrock_templates` were copied from prospect, so the prototype stands alone. The
 dependencies are numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
 optionally desitarget. License: BSD 3-clause, same authors as prospect.

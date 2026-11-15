@@ -393,7 +393,7 @@ async function gunzip(b64) {
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Response(stream).arrayBuffer();
 }
-// "q2" encoding: see encode() and _esc8() in make_prospect2.py.  Each array is [int8 stream,
+// "q2" encoding: see encode() and _esc8() in the Python generator.  Each array is [int8 stream,
 // int32 escape stream]: -128 = take the next escape value; flux -127 = masked.
 async function decodeQ2() {
   const parts = [D.noise, D.flux, D.model, D.amodel].map(p => p ? Promise.all(p.map(gunzip)) : null);
