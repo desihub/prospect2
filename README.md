@@ -62,6 +62,24 @@ optionally desitarget for target-bit names. No dependency on prospect: the line 
 (`py/prospect2/data/{emission,absorption}_lines.txt`) and `load_redrock_templates` were copied from it.
 License: BSD 3-clause (`LICENSE.rst`), same as prospect.
 
+## Tests
+
+```
+pytest                 # tiers 1-3 (about 5 s)
+pytest -m browser      # tier 4: page in headless Chrome
+```
+
+| tier | file(s)                                      | needs                                      |
+|------|----------------------------------------------|--------------------------------------------|
+| 1    | `test_util.py`, `test_encode.py`, `test_models.py` | nothing                              |
+| 2    | `test_page.py`, `test_script.py`             | nothing (synthetic Spectra)                |
+| 3    | `test_realdata.py`                           | petal 4 of tile 1496, else skipped         |
+| 4    | `test_browser.py` (opt-in)                   | Chrome (`$CHROME`, the macOS app, or `google-chrome`/`chromium` on `$PATH`) |
+
+Tier 3 looks for `coadd-4-1496-thru20240214.fits` and its redrock files in `$PROSPECT2_TEST_DATA`,
+then `scratch/data/`, then `$DESI_ROOT/spectro/redux/{loa,nevis}/tiles/cumulative/1496/20240214/`.
+Checks that need rrdetails or redrock templates (`$RR_TEMPLATE_DIR`) skip without them.
+
 ## Architecture
 
 * Python (`prospect2.make_html`, called by `bin/plot_prospect2`) builds a JSON payload;

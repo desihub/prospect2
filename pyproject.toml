@@ -40,3 +40,8 @@ where = ["py"]
 
 [tool.setuptools.dynamic]
 version = {attr = "prospect2.__version__"}  # read with ast.literal_eval, no import needed
+
+[tool.pytest.ini_options]
+testpaths = ["py/prospect2/test"]
+markers = ["browser: loads pages in headless Chrome (opt-in: pytest -m browser)"]
+addopts = "-m 'not browser'"

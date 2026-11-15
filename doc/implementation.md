@@ -65,6 +65,31 @@ User decisions:
   parsing HTML.
 - File names shown on the page come from `provenance=dict(source, redrock, model_source, rrdetails)`.
 
+## Tests
+
+Four tiers in `py/prospect2/test/` (user-approved design, 2026-11-14):
+1. *Unit tests* (no data): fiber lists, selection, output naming, q2 round trips, camera-model
+   merging.
+2. *Synthetic Spectra* (`desispec.test.util.get_blank_spectra` + the fibermap columns the page
+   reads): `make_payload`/`make_html` behavior and errors, `parse()`. Models are passed in and
+   alternate-fit models are off, so no redrock templates are needed.
+3. *Real data* for specific fibers of petal 4, tile 1496 (masked cameras, NO DATA, alternate-fit
+   rules, API page == script page), found via `$PROSPECT2_TEST_DATA`, `scratch/data/`, then the
+   loa/nevis tile directory under `$DESI_ROOT`; skipped if absent. An explicitly set but wrong
+   `$PROSPECT2_TEST_DATA` is an error, not a silent skip.
+4. *Browser* (opt-in, `-m browser`): headless Chrome loads a synthetic page; no JS errors, and
+   per-spectrum sums of the JS-decoded flux/model match the Python decoder.
+
+Decisions:
+- *No byte-identical golden page in pytest:* every intentional change would break it. `cmp`
+  against the previous build stays the manual check for refactors (CLAUDE.md).
+- *No real-data fixture in git:* 2–4 MB of binaries forever; tier 3 runs wherever the data are.
+- `decode_q2` in `test/util.py` duplicates the JS `decodeQ2`; tier 4 guards against drift.
+- Model round trip: error ≤ half a step. (Until 2026-11-14 the model was quantized with the exact
+  scale but decoded with the 6-digit `mscale`, adding up to 5e-6·|model|; now `encode_model`
+  quantizes with the rounded scale.)
+- Chrome must run without `--user-data-dir`: with it, headless Chrome on macOS hangs.
+
 ## Data handling (Python)
 
 **Cameras are merged with `desispec.coaddition.coadd_cameras`**, onto a single linear wavelength

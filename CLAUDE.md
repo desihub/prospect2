@@ -65,7 +65,13 @@ the generator or the template, regenerate both example pages.
 
 ## Testing
 
-There is no test suite. Verify by rendering:
+`pytest` (tiers 1–3, ~5 s) and `pytest -m browser` (headless Chrome); see README "Tests" and
+`doc/implementation.md` "Tests" for the design. Run both after changes; add tests for new
+behavior. Tests live in `py/prospect2/test/`, helpers (synthetic Spectra, a Python q2 decoder,
+payload extraction) in `test/util.py`. If the q2 encoding changes, update `decode_q2` there too:
+the browser test compares it with the JS decoder.
+
+pytest doesn't check pixels or layout. For visual changes, also verify by rendering:
 
 - Screenshot with headless Chrome:
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --window-size=1600,1100 --virtual-time-budget=8000 --screenshot=OUT.png "file://$PWD/scratch/output/example-20.html#i=7"`
