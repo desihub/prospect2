@@ -191,4 +191,6 @@ TARGETID (stuck sky fibers).
 - VI (visual inspection, quality 0–4) is stored in localStorage keyed by source file and exported
   as CSV. There is no server.
 - Light and dark themes are supported. The canvas reads CSS custom properties, so re-render on
-  theme change (`rethemed`).
+  theme change (`rethemed`). The ◐ button flips to the opposite of the theme currently shown (pages start
+  by following the OS setting). It used to cycle auto → light → dark, which needed two clicks to
+  change anything visible when the OS was in light mode (user report, Safari).
