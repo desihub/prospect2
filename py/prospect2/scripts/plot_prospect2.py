@@ -1,384 +1,28 @@
-#!/usr/bin/env python
+#
+# See top-level LICENSE.rst file for Copyright information
 
 """
-Prototype "prospect2" spectral viewer generator.
+prospect2.scripts.plot_prospect2
+================================
 
-Writes a single self-contained HTML file: a small custom JS app (uPlot for the
-main plot, plain canvas for thumbnails) plus a compact gzip+base64 float16
-data payload.  No Bokeh, no server, works offline.
+Command-line interface: read a coadd (or spectra) file and its matching redrock
+files, then write one offline viewer page with prospect2.make_html().
 
 Usage (with bin/ on $PATH and py/ on $PYTHONPATH):
     plot_prospect2 -i coadd-4-1496-thru20240214.fits    # -> ./prospect-4-1496-thru20240214.html
     plot_prospect2 -i coadd-4-1496-thru20240214.fits -o outdir/
-    plot_prospect2 -i coadd-4-1496-thru20240214.fits \
+    plot_prospect2 -i coadd-4-1496-thru20240214.fits \\
         -o example-20.html -f 2000:2020
 """
 
-import os, sys, json, gzip, base64, argparse, warnings
-import numpy as np
-from astropy.table import Table
-from astropy.io import fits
+import os, sys, argparse
 
+from desiutil.log import get_logger
 from desispec.io import read_spectra
-from desispec.io.util import checkgzip
-from desispec.coaddition import coadd_cameras
 
-from importlib.resources import files
-
-DATADIR = files('prospect2') / 'data'
-
-
-def _b64gz(a):
-    return base64.b64encode(gzip.compress(np.ascontiguousarray(a).tobytes(), compresslevel=9, mtime=0)).decode('ascii')
-
-
-def _esc8(d, masked=None):
-    """
-    Pack integers as int8 with escapes, for gzip (which compresses bytes far better than int16/32):
-      -128 = escape: the value is the next entry of a separate int32 stream
-      -127 = masked (only if `masked` is given; then unmasked -127 values are escaped too)
-    Returns [int8 stream, int32 escape stream], each gzip+base64.  Lossless.
-    """
-    d = np.asarray(d, dtype=np.int64)
-    lo = -126 if masked is not None else -127
-    esc = (d < lo) | (d > 127)
-    if masked is not None:
-        esc &= ~masked
-    a = np.where(esc, -128, d)
-    if masked is not None:
-        a = np.where(masked, -127, a)
-    big = d[esc]
-    assert np.all(np.abs(big) < 2**31), 'value too large for int32 escape'
-    return [_b64gz(a.astype('i1')), _b64gz(big.astype('<i4'))]
-
-
-def encode(flux, noise, model, model_precision=100):
-    """
-    Visually-lossless compact encoding of [nspec, nwave] arrays ("q2"):
-      noise : round(100*ln(noise)), delta-coded along wavelength (1% steps)
-      flux  : round(10*flux/noise), i.e. quantized at 0.1 sigma against the decoded noise; masked flagged
-      model : round(model/scale_i) delta-coded, scale_i = median(noise_i)/model_precision;
-              for a spectrum with no unmasked pixels, scale_i = span(model_i)/(10*model_precision)
-              where span = max(model,0)-min(model,0).  The model is noiseless, so coarse steps
-              show as staircases: 1000 is visually lossless even zoomed+smoothed; 100 can show
-              faint few-pixel steps in zoomed, heavily smoothed flat regions.
-    Each is packed by _esc8 (int8 + int32 escapes; same values as the old int16/int32 "q1"
-    encoding, ~20% smaller after gzip) and decoded in JS by decodeQ2().
-    """
-    bad = ~np.isfinite(flux) | ~(noise > 0)
-    ln = np.round(100 * np.log(np.where(bad, 1.0, noise))).astype(np.int64)
-    #- carry previous valid noise into masked pixels so deltas stay ~0
-    for i in range(ln.shape[0]):
-        idx = np.where(~bad[i], np.arange(ln.shape[1]), 0)
-        np.maximum.accumulate(idx, out=idx)
-        ln[i] = ln[i][idx]
-    dln = np.diff(ln, axis=1, prepend=0)
-    noise_q = np.exp(ln / 100)    #- what the decoder will reconstruct
-    q = np.round(np.where(bad, 0, flux / noise_q) * 10).astype(np.int64)
-    out = dict(enc='q2', noise=_esc8(dln), flux=_esc8(q, masked=bad), model=None, mscale=None)
-    if model is not None:
-        out['model'], out['mscale'] = encode_model(model, noise, model_precision)
-    return out
-
-
-def encode_model(model, noise, model_precision=100):
-    """
-    Model rows [nrow, nwave] in steps of scale_i = median(noise_i)/model_precision (noise_i = the
-    data noise of the spectrum the row belongs to, NaN where masked), delta-coded and packed by
-    _esc8.  See encode().  Returns (packed, per-row scales).
-    """
-    bad = ~(noise > 0)
-    with np.errstate(all='ignore'):
-        scale = np.array([np.nanmedian(np.where(b, np.nan, n)) / model_precision if (~b).any() else np.nan
-                          for b, n in zip(bad, noise)])
-    span = np.ptp(np.concatenate([np.nan_to_num(model), np.zeros((len(model), 1))], axis=1), axis=1)
-    fallback = span / (10 * model_precision)
-    scale = np.where(np.isfinite(scale) & (scale > 0), scale,
-                     np.where(fallback > 0, fallback, 1.0))    #- 1.0: model identically 0
-    mq = np.round(np.nan_to_num(model) / scale[:, None]).astype(np.int64)
-    return _esc8(np.diff(mq, axis=1, prepend=0)), [float(f'{s:.6g}') for s in scale]
-
-
-def camera_models(sp, zcat):
-    """
-    Redrock best-fit model per camera, convolved with each camera's resolution
-    (same recipe as prospect.viewer.create_model, but without its hard cut at
-    the middle of each camera overlap).  Returns {band: [nspec, nwave_band]}.
-    """
-    from numpy.ma.core import MaskedConstant
-    from desispec.interpolation import resample_flux
-    hdr = zcat.meta if 'TEMNAM00' in zcat.meta else None
-    templates = load_redrock_templates(zcat_header=hdr)
-    out = {b: np.zeros(sp.flux[b].shape) for b in sp.bands}
-    for i, zb in enumerate(zcat):
-        subtype = zb['SUBTYPE']
-        if isinstance(subtype, MaskedConstant):
-            subtype = zcat['SUBTYPE'].data.data[i]
-        if isinstance(subtype, bytes):
-            subtype = subtype.decode('utf-8')
-        tx = templates[(zb['SPECTYPE'], subtype)]
-        restmodel = tx.flux.T.dot(zb['COEFF'][:tx.nbasis]).T
-        for b in sp.bands:
-            mx = resample_flux(sp.wave[b], tx.wave * (1 + zb['Z']), restmodel)
-            out[b][i] = sp.R[b][i].dot(mx)
-    return out
-
-
-def read_rrdetails(rrdetails_file, zcat, nfits=5):
-    """
-    Top-`nfits` redrock fits per target from an rrdetails*.h5 file, as a list (one entry per zcat
-    row) of [[z, spectype, subtype, chi2 - best chi2, zwarn, dup], ...] ranked by chi2 (compact
-    arrays to keep the page small; expanded to objects in JS), or None for a target that is
-    missing, has no fit, or whose best fit doesn't match zcat.  dup = index of a better-ranked fit within
-    1000 km/s (redrock's own "same redshift" criterion), else -1.
-    Also returns {zcat row: the raw zfit rows} (for computing alternate-fit models).
-    """
-    import h5py
-    C = 299792.458
-    out = []
-    raw = {}
-    nbad = 0
-    with h5py.File(rrdetails_file, 'r') as f:
-        zf = f['zfit']
-        for row in zcat:
-            key = str(int(row['TARGETID']))
-            if key not in zf or row['NPIXELS'] == 0:
-                out.append(None)
-                continue
-            d = zf[key]['zfit'][:nfits]
-            s = lambda x: (x.decode() if isinstance(x, bytes) else str(x)).strip()
-            if abs(d['z'][0] - row['Z']) > 1e-6 or s(d['spectype'][0]) != s(row['SPECTYPE']):
-                nbad += 1
-                out.append(None)
-                continue
-            fits_ = []
-            for k in range(len(d)):
-                zk = float(d['z'][k])
-                dup = next((j for j in range(k) if C * abs(zk - d['z'][j]) / (1 + d['z'][j]) < 1000), -1)
-                fits_.append([round(zk, 6), s(d['spectype'][k]), s(d['subtype'][k]).strip('-'),
-                              round(float(d['chi2'][k] - d['chi2'][0]), 1), int(d['zwarn'][k]), dup])
-            out.append(fits_)
-            raw[len(out) - 1] = d
-    if nbad:
-        print(f'WARNING: {nbad} targets in {rrdetails_file} have a best fit that does not match the redrock file; alternate fits not shown for them')
-    return out, raw
-
-
-def alt_fit_models(sp, wave, zcat, raw, fitlists, nalt=2, max_dchi2=100):
-    """
-    Redrock models for alternate fits, computed from the rrdetails templates + coeff, convolved with
-    each camera's resolution and merged like the best-fit model.  Only fits ranked 2..nalt+1 with
-    chi2 - best chi2 < max_dchi2 get a model; sky and unassigned fibers (OBJTYPE != TGT) never do.
-    Appends the model's row index to each such fit's entry in `fitlists` (in place).
-    Returns (models [nrow, nwave], spectrum index of each row), or (None, None) if there are none.
-    """
-    from desispec.interpolation import resample_flux
-    rows = []
-    for i, d in raw.items():
-        if str(sp.fibermap['OBJTYPE'][i]).strip() != 'TGT':
-            continue
-        for k in range(1, min(nalt + 1, len(d))):
-            if d['chi2'][k] - d['chi2'][0] < max_dchi2:
-                fitlists[i][k].append(len(rows))
-                rows.append((i, d[k]))
-    if not rows:
-        return None, None
-    hdr = zcat.meta if 'TEMNAM00' in zcat.meta else None
-    templates = load_redrock_templates(zcat_header=hdr)
-    idx = np.array([i for i, _ in rows])
-    sub = sp[idx]
-    cam = {b: np.zeros(sub.flux[b].shape) for b in sp.bands}
-    s = lambda x: (x.decode() if isinstance(x, bytes) else str(x)).strip()
-    for j, (i, d) in enumerate(rows):
-        tx = templates[(s(d['spectype']), s(d['subtype']).strip('-'))]
-        rest = tx.flux.T.dot(d['coeff'][:tx.nbasis]).T
-        for b in sp.bands:
-            cam[b][j] = sub.R[b][j].dot(resample_flux(sp.wave[b], tx.wave * (1 + d['z']), rest))
-    return merge_camera_models(sub, cam, wave), idx
-
-
-def find_file(filename):
-    """filename or filename(.gz) if it exists, else None"""
-    try:
-        return checkgzip(filename)
-    except (FileNotFoundError, IOError):
-        return None
-
-
-def read_rrmodel(rrmodel_file, sp):
-    """
-    Read per-camera redrock models {band: [nspec, nwave_band]} from an rrmodel
-    file (REDSHIFTS + {B,R,Z}_WAVELENGTH + {B,R,Z}_MODEL HDUs), matched to the
-    rows of sp by TARGETID.  Returns None, with a warning, if the file doesn't
-    cover every spectrum and camera on the same wavelength grids.
-    """
-    with fits.open(rrmodel_file, memmap=True) as hx:
-        names = {h.name for h in hx}
-        tids = np.asarray(hx['REDSHIFTS'].data['TARGETID'])
-        row = {t: i for i, t in enumerate(tids)}
-        want = np.asarray(sp.fibermap['TARGETID'])
-        missing = [t for t in want if t not in row]
-        if missing:
-            print(f'WARNING: {len(missing)} TARGETIDs not in {rrmodel_file}; computing models instead')
-            return None
-        idx = np.array([row[t] for t in want])
-        out = {}
-        for b in sp.bands:
-            B = b.upper()
-            if f'{B}_MODEL' not in names or f'{B}_WAVELENGTH' not in names:
-                print(f'WARNING: no {B}_MODEL in {rrmodel_file}; computing models instead')
-                return None
-            w = hx[f'{B}_WAVELENGTH'].data
-            if len(w) != len(sp.wave[b]) or not np.allclose(w, sp.wave[b]):
-                print(f'WARNING: {B}_WAVELENGTH in {rrmodel_file} differs from spectra; computing models instead')
-                return None
-            out[b] = hx[f'{B}_MODEL'].data[idx].astype(np.float64)
-    return out
-
-
-def load_redrock_templates(template_dir=None, zcat_header=None):
-    """
-    Load redrock templates as a dict keyed by (SPECTYPE, SUBTYPE), silencing
-    redrock's stdout.  If zcat_header has TEMNAMnn/TEMVERnn keywords, load the
-    template versions used for the fit.  (From prospect.utilities.)
-    """
-    import contextlib
-    import redrock.templates
-    with open(os.devnull, 'w') as devnull, contextlib.redirect_stdout(devnull):
-        if zcat_header is not None:
-            return redrock.templates.load_templates_from_header(
-                zcat_header, template_dir=template_dir, asdict=True)
-        return redrock.templates.load_templates(template_dir, asdict=True)
-
-
-def merge_camera_models(sp, models, wave):
-    """
-    Merge per-camera models onto the coadd_cameras grid with the same ivar weights
-    used for the flux, so a camera that is masked at a pixel (model==0 there) does
-    not pull the model down.  Where every camera is masked, use the plain mean.
-    """
-    dw = wave[1] - wave[0]
-    num = np.zeros((sp.num_spectra(), len(wave)))
-    den = np.zeros_like(num); msum = np.zeros_like(num); cnt = np.zeros_like(num)
-    for b in sp.bands:
-        j0 = int(round((sp.wave[b][0] - wave[0]) / dw))
-        sl = slice(j0, j0 + len(sp.wave[b]))
-        assert np.allclose(wave[sl], sp.wave[b]), f'camera {b} not aligned with merged grid'
-        iv = sp.ivar[b] * ((sp.mask[b] == 0) if sp.mask is not None else 1)
-        num[:, sl] += iv * models[b]; den[:, sl] += iv
-        msum[:, sl] += models[b]; cnt[:, sl] += 1
-    return np.where(den > 0, num / np.where(den > 0, den, 1), msum / np.maximum(cnt, 1))
-
-
-def default_outfile(infile):
-    """
-    Default output basename for a page holding every spectrum in `infile`:
-    coadd-X.fits[.gz] or spectra-X.fits[.gz] -> prospect-X.html.  None if the
-    input name doesn't follow that pattern.
-    """
-    base = os.path.basename(infile)
-    for ext in ('.fits.gz', '.fits'):
-        if base.endswith(ext):
-            base = base[:-len(ext)]
-            break
-    else:
-        return None
-    for prefix in ('coadd-', 'spectra-'):
-        if base.startswith(prefix) and len(base) > len(prefix):
-            return 'prospect-' + base[len(prefix):] + '.html'
-    return None
-
-
-def resolve_outfile(outarg, infile, subset):
-    """
-    Output file path from the -o argument (None if not given).  cp-style: an
-    existing directory or a path ending in '/' is a directory, which gets the
-    default name; anything else is a file name.  Raises ValueError with a message
-    explaining why a file name is needed if the default name can't be used.
-    Warns if an explicit file name doesn't end in .html/.htm.
-    """
-    if outarg is not None and not (outarg.endswith(os.sep) or os.path.isdir(outarg)):
-        if not outarg.lower().endswith(('.html', '.htm')):
-            print(f"WARNING: output {outarg} doesn't end in .html; writing it as a file "
-                  f"(use {outarg}/ for a directory)")
-        return outarg
-
-    where = 'no -o was given' if outarg is None else f'-o {outarg} is a directory'
-    name = default_outfile(infile)
-    if subset:
-        dflt = f' {name}' if name else ''
-        raise ValueError(f'{where}, but -f/-t select a subset of the spectra in '
-                         f'{os.path.basename(infile)}, so the default name{dflt} (reserved for pages '
-                         f'with every spectrum in the input) does not apply; give -o FILE.html')
-    if name is None:
-        raise ValueError(f"{where}, but can't derive an output name from {os.path.basename(infile)}: "
-                         f"default names map coadd-*.fits or spectra-*.fits to prospect-*.html; "
-                         f"give -o FILE.html")
-    return os.path.join(outarg, name) if outarg else name
-
-
-def parse_fiberlist(spec):
-    """
-    "10,20,30-40,50:60" -> [10, 20, 30..40, 50..59]: "a-b" is inclusive,
-    "a:b" is python-style (excludes b).  Same syntax as the viewer's filter box.
-    """
-    fibers = []
-    for part in spec.replace(' ', '').split(','):
-        if not part:
-            continue
-        if ':' in part:
-            a, b = part.split(':'); fibers.extend(range(int(a), int(b)))
-        elif '-' in part[1:]:
-            a, b = part.split('-'); fibers.extend(range(int(a), int(b) + 1))
-        else:
-            fibers.append(int(part))
-    return np.array(fibers, dtype=int)
-
-
-def air_to_vac(air):
-    s2 = (1e4 / air) ** 2
-    n = 1 + 8.336624212083e-5 + 2.408926869968e-2 / (1.301065924522e2 - s2) \
-        + 1.599740894897e-4 / (3.892568793293e1 - s2)
-    return air * n
-
-
-def read_lines():
-    lines = []
-    for kind in ('emission', 'absorption'):
-        fn = DATADIR / f'{kind}_lines.txt'
-        for row in fn.read_text(encoding='utf-8').splitlines():
-            if row.startswith('#') or not row.strip():
-                continue
-            name, longname, lam, vac, major = [x.strip() for x in row.split(',')]
-            lam = float(lam)
-            if vac != 'True':
-                lam = air_to_vac(lam)
-            lines.append(dict(name=name, longname=longname, wave=round(lam, 2),
-                              kind=kind[:3], major=(major == 'True')))
-    return lines
-
-
-def mag(flux):
-    flux = float(flux)
-    return round(22.5 - 2.5 * np.log10(flux), 2) if flux > 0 else None
-
-
-def target_classes(row):
-    try:
-        from desitarget.targetmask import desi_mask, bgs_mask, mws_mask, scnd_mask
-    except ImportError:
-        return [], []
-    names = []
-    for col, mask in [('DESI_TARGET', desi_mask), ('BGS_TARGET', bgs_mask),
-                      ('MWS_TARGET', mws_mask), ('SCND_TARGET', scnd_mask)]:
-        if col in row.colnames and row[col] != 0:
-            names += [n for n in mask.names(int(row[col]))
-                      if n not in ('BGS_ANY', 'MWS_ANY', 'SCND_ANY') and not n.endswith(('_SOUTH', '_NORTH'))]
-    #- primary classes for compact badges
-    primary = [n for n in names if n in ('ELG', 'LRG', 'QSO', 'BGS_BRIGHT', 'BGS_FAINT', 'MWS_BROAD',
-                                         'MWS_MAIN_BLUE', 'MWS_MAIN_RED', 'STD_FAINT', 'STD_BRIGHT',
-                                         'STD_WD', 'MWS_WD', 'ELG_LOP', 'ELG_VLO', 'ELG_HIP')]
-    return names, primary
+from prospect2.page import make_html, write_html
+from prospect2.io import find_redrock_files, read_redshifts, read_rrmodel, read_rrdetails
+from prospect2.util import select_spectra, resolve_outfile
 
 
 def parse(options=None):
@@ -422,173 +66,44 @@ def parse(options=None):
 
 
 def main(args):
-    outfile = args.outfile
-    outdir = os.path.dirname(outfile)
+    log = get_logger()
+    outdir = os.path.dirname(args.outfile)
     if outdir and not os.path.isdir(outdir):
         os.makedirs(outdir)
-        print(f'INFO: Created directory {outdir}')
+        log.info(f'Created directory {outdir}')
 
     sp = read_spectra(args.infile)
+    rr = find_redrock_files(args.infile)
+    zcat = read_redshifts(rr['redrock']) if rr['redrock'] else None
 
-    basedir, basefile = os.path.split(args.infile)
-    rrfile = basefile.replace('coadd', 'redrock').replace('spectra', 'redrock')
-    rrfile = find_file(os.path.join(basedir, rrfile))
-    zcat = None
-    rrmodel_file = None
-    rrdetails_file = None
-    if rrfile:
-        zcat = Table.read(rrfile, 'REDSHIFTS')
-        zcat.meta.update(fits.getheader(rrfile, 0))
-        rrdir, rrbase = os.path.split(rrfile)
-        if not args.no_rrmodel and rrbase.startswith('redrock'):
-            rrmodel_file = find_file(os.path.join(rrdir, 'rrmodel' + rrbase[len('redrock'):]))
-        if args.nfits > 0 and rrbase.startswith('redrock'):
-            rrdetails_file = find_file(os.path.join(rrdir, 'rrdetails' + rrbase[len('redrock'):].replace('.fits.gz', '.fits').replace('.fits', '.h5')))
-
-    #- -f and -t select the union of the listed fibers and TARGETIDs (all spectra if neither)
-    keep = np.zeros(sp.num_spectra(), dtype=bool) if (args.fibers or args.targetids) else np.ones(sp.num_spectra(), dtype=bool)
-    if args.fibers:
-        keep |= np.isin(sp.fibermap['FIBER'], parse_fiberlist(args.fibers))
-    if args.targetids:
-        keep |= np.isin(sp.fibermap['TARGETID'], [int(t) for t in args.targetids.replace(' ', '').split(',') if t])
+    keep = select_spectra(sp.fibermap, args.fibers, args.targetids)
+    if not keep.any():
+        log.error('no spectra selected')
+        return 1
     sp = sp[keep]
     if zcat is not None:
         zcat = zcat[keep]
-    if sp.num_spectra() == 0:
-        sys.exit('ERROR: no spectra selected')
 
-    #- Per-camera median S/N (before merging cameras)
-    snr = {}
-    for b in sp.bands:
-        with np.errstate(invalid='ignore'):
-            s = sp.flux[b] * np.sqrt(sp.ivar[b])
-        with warnings.catch_warnings():         #- fully masked fibers -> NaN (shown as "—")
-            warnings.simplefilter('ignore', RuntimeWarning)
-            snr[b] = np.nanmedian(np.where(sp.ivar[b] > 0, s, np.nan), axis=1)
+    models = fits = None
+    use_rrmodel = zcat is not None and rr['rrmodel'] and not args.no_rrmodel
+    if use_rrmodel:
+        models = read_rrmodel(rr['rrmodel'], sp.fibermap['TARGETID'], sp.wave)
+        log.info(f'redrock models read from {rr["rrmodel"]}')
+    if zcat is not None and rr['rrdetails'] and args.nfits > 0:
+        fits = read_rrdetails(rr['rrdetails'], zcat, nfits=args.nfits)
+        log.info(f'top {args.nfits} redrock fits read from {rr["rrdetails"]}')
 
-    #- Camera overlap regions [lo, hi, label], from the per-camera grids
-    bands = sorted(sp.bands, key=lambda b: sp.wave[b][0])
-    overlaps = [[float(sp.wave[b2][0]), float(sp.wave[b1][-1]), f'{b1}/{b2} overlap']
-                for b1, b2 in zip(bands[:-1], bands[1:]) if sp.wave[b2][0] < sp.wave[b1][-1]]
-
-    #- Redrock model on per-camera grids, then merged
-    model = None
-    model_source = None
-    if zcat is not None:
-        cam_models = read_rrmodel(rrmodel_file, sp) if rrmodel_file else None
-        if cam_models is not None:
-            model_source = os.path.basename(rrmodel_file)
-            print(f'INFO: redrock models read from {rrmodel_file}')
-        else:
-            cam_models = camera_models(sp, zcat)
-            model_source = 'redrock templates + COEFF'
-            print('INFO: redrock models computed from templates + COEFF')
-
-    #- Merge cameras onto a single linear grid
-    sp_all = coadd_cameras(sp)
-    band = sp_all.bands[0]
-    wave = sp_all.wave[band]
-    flux = sp_all.flux[band].copy()
-    ivar = sp_all.ivar[band]
-    bad = (ivar <= 0)
-    if sp_all.mask is not None:
-        bad |= (sp_all.mask[band] != 0)
-    flux[bad] = np.nan
-    with np.errstate(divide='ignore'):
-        noise = np.where(bad, np.nan, 1 / np.sqrt(ivar))
-    if zcat is not None:
-        model = merge_camera_models(sp, cam_models, wave)
-
-    dw = np.diff(wave)
-    assert np.allclose(dw, dw[0]), 'expected a linear wavelength grid'
-
-    #- Per-target metadata
-    from redrock.zwarning import ZWarningMask
-    zw_names = [n for n in dir(ZWarningMask) if n.isupper()]
-    try:
-        from desispec.maskbits import fibermask
-    except ImportError:
-        fibermask = None
-
-    fitlists = None
-    if rrdetails_file is not None:
-        fitlists, rawfits = read_rrdetails(rrdetails_file, zcat, nfits=args.nfits)
-        print(f'INFO: top {args.nfits} redrock fits read from {rrdetails_file}')
-        #- sky fibers: no alternate fits (redrock fits to sky residuals are noise)
-        for i in range(len(fitlists)):
-            if str(sp.fibermap['OBJTYPE'][i]).strip() == 'SKY':
-                fitlists[i] = None
-                rawfits.pop(i, None)
-
-    alt_model, alt_rows = None, None
-    if fitlists is not None and args.alt_models > 0:
-        nalt = min(args.alt_models, args.nfits - 1)
-        alt_model, alt_rows = alt_fit_models(sp, wave, zcat, rawfits, fitlists, nalt=nalt, max_dchi2=args.alt_max_dchi2)
-        n = 0 if alt_model is None else len(alt_model)
-        print(f'INFO: models for {n} alternate fits (fits 2-{nalt + 1} with Δχ² < {args.alt_max_dchi2:g}, not sky/unassigned)')
-
-    fm = sp.fibermap
-    targets = []
-    for i in range(sp.num_spectra()):
-        r = fm[i]
-        allclass, primary = target_classes(r)
-        t = dict(
-            i=i, targetid=str(int(r['TARGETID'])), fiber=int(r['FIBER']) if 'FIBER' in fm.colnames else None,
-            tileid=int(r['TILEID']) if 'TILEID' in fm.colnames else None,
-            ra=round(float(r['TARGET_RA']), 6), dec=round(float(r['TARGET_DEC']), 6),
-            objtype=str(r['OBJTYPE']), morph=str(r['MORPHTYPE']).strip(),
-            classes=allclass, primary=primary,
-            mag={k: mag(r[f'FLUX_{k.upper()}']) for k in ('g', 'r', 'z', 'w1', 'w2')},
-            fibermag_r=mag(r['FIBERFLUX_R']),
-            ebv=round(float(r['EBV']), 3),
-            exptime=round(float(r['COADD_EXPTIME']), 1), numexp=int(r['COADD_NUMEXP']),
-            fiberstatus=int(r['COADD_FIBERSTATUS']),
-            fiberstatus_names=(fibermask.names(int(r['COADD_FIBERSTATUS'])) if fibermask else []),
-            snr={b: (round(float(snr[b][i]), 2) if np.isfinite(snr[b][i]) else None) for b in sp.bands},
-            #- cameras with no unmasked pixels for this spectrum: [lo, hi, band]
-            masked_cams=[[float(sp.wave[b][0]), float(sp.wave[b][-1]), b] for b in bands
-                         if not np.any((sp.ivar[b][i] > 0) & ((sp.mask[b][i] == 0) if sp.mask is not None else True))],
-        )
-        if zcat is not None:
-            zb = zcat[i]
-            zwarn = int(zb['ZWARN'])
-            t.update(z=float(zb['Z']), zerr=float(zb['ZERR']), zwarn=zwarn,
-                     zwarn_names=[n for n in zw_names if zwarn & getattr(ZWarningMask, n)],
-                     spectype=str(zb['SPECTYPE']).strip(), subtype=str(zb['SUBTYPE']).strip().strip('-'),
-                     deltachi2=round(float(zb['DELTACHI2']), 2), chi2=round(float(zb['CHI2']), 1),
-                     npixels=int(zb['NPIXELS']))
-        if fitlists is not None and fitlists[i] is not None:
-            t['fits'] = fitlists[i]
-        targets.append(t)
-
-    payload = dict(
-        title=args.title or f'{basefile}',
-        source=basefile,
-        redrock=os.path.basename(rrfile) if zcat is not None else None,
-        model_source=model_source,
-        rrdetails=os.path.basename(rrdetails_file) if rrdetails_file else None,
-        wave0=float(wave[0]), dwave=float(dw[0]), nwave=len(wave), nspec=sp.num_spectra(),
-        flux_unit='1e-17 erg/s/cm²/Å',
-        targets=targets,
-        lines=read_lines(),
-        overlaps=overlaps,
-        **encode(flux, noise, model, model_precision=args.model_precision),
-    )
-    if alt_model is not None:
-        payload['amodel'], payload['amscale'] = encode_model(alt_model, noise[alt_rows], args.alt_model_precision)
-        payload['alt_models'] = dict(n=nalt, max_dchi2=args.alt_max_dchi2)
-
-    template = (DATADIR / 'prospect2_template.html').read_text(encoding='utf-8')
-    uplot_js = (DATADIR / 'vendor' / 'uPlot.iife.min.js').read_text(encoding='utf-8')
-    uplot_css = (DATADIR / 'vendor' / 'uPlot.min.css').read_text(encoding='utf-8')
-    html = (template.replace('/*__UPLOT_CSS__*/', uplot_css)
-                    .replace('/*__UPLOT_JS__*/', uplot_js)
-                    .replace('"__DATA__"', json.dumps(payload, separators=(',', ':')))
-                    .replace('__TITLE__', payload['title']))
-    verb = 'Overwrote existing' if os.path.exists(outfile) else 'Wrote'
-    with open(outfile, 'w', encoding='utf-8') as fx:
-        fx.write(html)
-    print(f'{verb} {outfile}: {os.path.getsize(outfile)/1e6:.2f} MB, {sp.num_spectra()} spectra')
+    base = os.path.basename
+    provenance = dict(source=base(args.infile),
+                      redrock=base(rr['redrock']) if rr['redrock'] else None,
+                      model_source=base(rr['rrmodel']) if use_rrmodel else None,
+                      rrdetails=base(rr['rrdetails']) if fits is not None else None)
+    html = make_html(sp, zcat=zcat, models=models, fits=fits, title=args.title, provenance=provenance,
+                     alt_models=args.alt_models, alt_max_dchi2=args.alt_max_dchi2,
+                     model_precision=args.model_precision, alt_model_precision=args.alt_model_precision)
+    write_html(html, args.outfile)
+    log.info(f'{sp.num_spectra()} spectra')
+    return 0
 
 
 if __name__ == '__main__':

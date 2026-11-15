@@ -11,6 +11,24 @@ plot_prospect2 -i coadd-4-1496-thru20240214.fits -f 2000:2020 -o example-20.html
 Matching `redrock-*.fits`, `rrmodel-*.fits` and `rrdetails-*.h5` files are found next to the coadd.
 Use `-f`/`-t` to select a subset (see below).
 
+From Python, e.g. to combine several coadds into one page:
+
+```python
+import prospect2
+from desispec.io import read_spectra
+
+spectra = [read_spectra(f, return_models=True, return_redshifts=True) for f in coadd_files]
+spectra = [sp[sp.fibermap['OBJTYPE'] == 'TGT'] for sp in spectra]    # any selection
+html = prospect2.make_html(spectra)                              # or a single Spectra
+prospect2.write_html(html, 'mypage.html')
+```
+
+`make_html` takes a `Spectra` or a list of them (stacked after checking that the redrock template
+versions agree), plus optional `zcat`, `models` and `fits` (alternate fits from `read_rrdetails`),
+each row-matched to the spectra. `zcat` and `models` default to `spectra.redshifts` and
+`spectra.model`; explicit arguments override them. Without models, they are computed from the
+redrock templates.
+
 Output name: `coadd-X.fits[.gz]` (or `spectra-X.fits[.gz]`) → `prospect-X.html`, written to the
 current directory, or into `-o DIR` if that is an existing directory or ends in `/`. This default is
 reserved for pages with every spectrum in the input, so with `-f`/`-t`, or an input named
@@ -45,12 +63,12 @@ License: BSD 3-clause (`LICENSE.rst`), same as prospect.
 
 ## Architecture
 
-* Python (`bin/plot_prospect2` → `py/prospect2/scripts/plot_prospect2.py`) builds a JSON payload;
+* Python (`prospect2.make_html`, called by `bin/plot_prospect2`) builds a JSON payload;
   the HTML template (`py/prospect2/data/prospect2_template.html`) is a small hand-written JS app
   plus inlined uPlot (50 KB, `py/prospect2/data/vendor/`). No Bokeh, no server.
 * Cameras merged with `desispec.coaddition.coadd_cameras`. Per-camera redrock models come from the
   matching `rrmodel*.fits` (`redrock-X.fits` → `rrmodel-X.fits`, rows matched by TARGETID, wavelength
-  grids checked) if present, else are computed from templates + COEFF (`camera_models`; forced with
+  grids checked, error on mismatch) if present, else are computed from templates + COEFF (`camera_models`; forced with
   `--no-rrmodel`). Either way they're merged with the same ivar weights as the flux
   (`merge_camera_models`). The two agree except within ~5 px of masked pixels, where the rrmodel
   sags toward 0 (e.g. fiber 2183 z, pix 809: rrmodel 22.1, computed 29.6, data 29.4), as if the

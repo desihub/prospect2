@@ -15,9 +15,17 @@ DESI package layout (as desispec): `bin/` scripts work with `bin/` on `$PATH` an
 `$PYTHONPATH`, no installation needed.
 
 - `bin/plot_prospect2`: thin wrapper calling `prospect2.scripts.plot_prospect2` `parse()` / `main(args)`.
-- `py/prospect2/scripts/plot_prospect2.py`: the generator (still one module; to be split into
-  library modules). It reads coadd + redrock (+ optional rrmodel/rrdetails), merges the cameras,
-  encodes the payload ("q2"), and fills the template.
+- `py/prospect2/scripts/plot_prospect2.py`: CLI only: `parse()`, then `main(args)` finds and reads
+  the files, selects `-f`/`-t`, calls `make_html`, writes the page. Keep it minimal.
+- `py/prospect2/page.py`: **`make_html(spectra, zcat=, models=, fits=, ...)`**, the object-input
+  entry point (also `prospect2.make_html`); `make_payload` (dict) + `render_html` (template fill);
+  `write_html`.
+- `py/prospect2/io.py`: companion-file discovery (`find_redrock_files`), `read_redshifts`,
+  `read_rrmodel`, `read_rrdetails`, line lists, `DATADIR`.
+- `py/prospect2/models.py`: redrock models (templates, per-camera, merge, alternate fits).
+- `py/prospect2/encode.py`: "q2" payload packing.
+- `py/prospect2/util.py`: `-f`/`-t` selection, output naming.
+- Logging uses `desiutil.log.get_logger()`, not `print`.
 - `py/prospect2/data/` (package data, found via `importlib.resources`):
   - `prospect2_template.html`: **the whole viewer app** (CSS + JS, ~1200 lines). It's source code,
     not data, but lives here so installed packages can find it. The placeholders

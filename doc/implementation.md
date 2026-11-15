@@ -7,7 +7,7 @@ specific fiber that exposed a problem).
 ## Architecture
 
 **Python builds a data payload; a static hand-written JS app renders it.** The generator
-(`bin/plot_prospect2` → `py/prospect2/scripts/plot_prospect2.py`) reads the coadd/redrock files and
+(`bin/plot_prospect2` → `prospect2.make_html`) reads the coadd/redrock files and
 writes one self-contained HTML file: `prospect2_template.html` with uPlot 1.6.31 (`vendor/`,
 ~50 KB) and the payload inlined.
 
@@ -31,6 +31,30 @@ code reads in `py/prospect2/data/`, found with `importlib.resources`, so it all 
 dependencies are numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
 optionally desitarget. License: BSD 3-clause, same authors as prospect.
 
+## Python API
+
+**`prospect2.make_html(spectra, zcat=None, models=None, fits=None, ...)` is the entry point**
+(`page.py`); the script only parses arguments, reads files and calls it. Goal (user, 2026-11-14):
+users can read several coadds, filter and combine them, and make one page without temporary files.
+User decisions:
+- *Row-matched inputs:* `zcat`, `models` (`{band: [nspec, nwave_band]}`) and `fits` must match the
+  spectra row for row (desispec convention, nothing silently reordered); TARGETIDs and shapes are
+  checked, with a ValueError.
+- *Spectra from `read_spectra(..., return_models=True, return_redshifts=True)` work as is:*
+  `zcat`/`models` default to `spectra.redshifts`/`spectra.model`. Explicit arguments override them
+  (logged).
+- *A list of Spectra is accepted* (and lists of `zcat`/`models`/`fits` to match). `desispec.spectra.stack`
+  keeps only the first input's `redshifts.meta`, so the TEMNAMnn/TEMVERnn template versions are
+  compared *before* stacking, and differences raise (supporting mixed versions would need
+  per-spectrum template bookkeeping; maybe later). A single pre-stacked Spectra is also accepted;
+  then template consistency is the caller's responsibility.
+- *`read_rrdetails` returns raw records*, one entry per zcat row (None where missing or not
+  matching zcat), so lists from several files concatenate and filter like the zcats; the display
+  lists, ≈-duplicate marks and sky exclusion are computed in `make_payload`.
+- `make_payload` (dict) and `render_html` (str) are separate, so the payload can be tested without
+  parsing HTML.
+- File names shown on the page come from `provenance=dict(source, redrock, model_source, rrdetails)`.
+
 ## Data handling (Python)
 
 **Cameras are merged with `desispec.coaddition.coadd_cameras`**, onto a single linear wavelength
@@ -44,8 +68,9 @@ grid. The JS assumes a linear grid (`wave0`, `dwave`), which is asserted in Pyth
 - Where every camera is masked, the plain mean is used.
 
 **rrmodel files are preferred when present.** `rrmodel-X.fits` next to `redrock-X.fits` is read,
-with rows matched by TARGETID and the wavelength grids checked. On any mismatch, or with
-`--no-rrmodel`, models are computed from the templates + COEFF.
+with rows matched by TARGETID and the wavelength grids checked. A mismatch is an error (user
+decision 2026-11-14; it used to fall back silently to computed models). Without an rrmodel file, or
+with `--no-rrmodel`, models are computed from the templates + COEFF.
 - *Known issue:* rrmodel models sag toward 0 within ~5 px of masked pixels. For example, fiber
   2183 z pix 809 is 22.1 in the rrmodel vs 29.6 computed, with data 29.4. This looks like masked
   pixels being zeroed before the resolution convolution.
