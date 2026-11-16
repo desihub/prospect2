@@ -34,6 +34,20 @@ columns (coordinates, photometry, `COADD_*`, …) are shown as "—" when missin
 model_source=, rrdetails=)` (all optional) names the input files; they are shown on hover over the
 page name and in the `?` help.
 
+Combining files: the grouping (header `SPGRP`) decides what identifies a spectrum, which keys the
+VI and the VI export columns. Pass a *list* of Spectra, not one you stacked yourself: stacking keeps
+only the first file's headers (SPGRP, NIGHT, SURVEY, PROGRAM).
+
+| SPGRP                         | unique key                                  | list label                                |
+|-------------------------------|---------------------------------------------|-------------------------------------------|
+| cumulative, pernight, perexp  | TILEID, FIBER, NIGHT (+ EXPID if uncoadded) | fiber, or `tile:fiber` with several tiles |
+| healpix, uniqpix              | SURVEY, PROGRAM, TARGETID                   | `#row`                                    |
+| none (e.g. hand-made Spectra) | TILEID, FIBER if known, else TARGETID       | as above                                  |
+
+Mixing groupings is an error. If the key is not unique (e.g. the same file twice), VI falls back to
+the row on the page, with a warning. The same TARGETID elsewhere on the page (another tile, night or
+program) is linked under the title ("also tile 2000 night 20250101").
+
 Output name: `coadd-X.fits[.gz]` (or `spectra-X.fits[.gz]`) → `prospect-X.html`, written to the
 current directory, or into `-o DIR` if that is an existing directory or ends in `/`. This default is
 reserved for pages with every spectrum in the input, so with `-f`/`-t`, or an input named
@@ -50,15 +64,16 @@ Page sizes for petal 4, tile 1496:
 
 Deep links: `#i=7&s=3` (target index, smoothing), `&view=grid`, `&theme=dark`, `&q=<filter>`.
 
-Fiber/TARGETID lists, same syntax in `-f` and in the page's filter box: `10,20,30-40,50:60` =
+Fiber/TARGETID lists, same syntax in `-f` (not for healpix coadds, which have no FIBER) and in the page's filter box: `10,20,30-40,50:60` =
 fibers 10, 20, 30–40 (inclusive), 50–59 (python-style). In the filter box, integers ≥ 5000 or
 negative are TARGETIDs (exact match, or partial match for a single number). `-f` and `-t` together
 select the union.
 
 Filter box: whitespace-separated terms, all of which must match (`2030-2040 ELG 0.79<z<0.81 !QSO`).
-A term is a comparison on `z`, `dchi2`, `fiber`, `snr` or `zwarn` (`z>1.2`, `1.2<=z`, `0.79<z<0.81`),
-a fiber/TARGETID list (no spaces inside it), or a case-insensitive text match on the target's labels
-(`ELG`, `GALAXY`, `nodata`, `unassigned`). Prefix `!` negates a term. Terms must not contain spaces
+A term is a comparison on `z`, `dchi2`, `fiber`, `tile`, `night`, `snr` or `zwarn` (`z>1.2`,
+`1.2<=z`, `0.79<z<0.81`, `tile=1496`), a fiber/TARGETID list (no spaces inside it), or a
+case-insensitive text match on the target's labels (`ELG`, `GALAXY`, `nodata`, `unassigned`, survey
+and program like `sv3`, `dark`). Prefix `!` negates a term. Terms must not contain spaces
 (`z > 1.2` doesn't work). Terms that can't be parsed are shown in red under the box and ignored.
 
 Dependencies: numpy, astropy, desispec, redrock (+ templates via `$RR_TEMPLATE_DIR`), and
@@ -121,7 +136,8 @@ Checks that need rrdetails or redrock templates (`$RR_TEMPLATE_DIR`) skip withou
   (+1.2 MB per 500 spectra). Flux error ≤ 0.05σ, mask preserved.
   ~10x smaller than the Bokeh page for the same 20 spectra.
 * Trial-z model = pipeline model shifted in log λ (ignores resolution difference, fine for display).
-* VI stored in localStorage, exported as CSV.
+* VI stored in localStorage, keyed by the grouping's unique key (above), exported as CSV with
+  TARGETID, SURVEY, PROGRAM, then the rest of the key (TILEID, FIBER, NIGHT[, EXPID] for tiles).
 * Line markers (`v` key / toolbar "Full | Data | Model | Edge", hash `&ls=`), default **Data**:
   SDSS-style short ticks, emission above / absorption below the plotted spectrum. The tick starts just
   outside everything plotted at the line (flux, model, and the noise trace above only); the label is

@@ -373,7 +373,7 @@ table.mags td { padding: 2px; font-weight: 600; }
       <tr><td><kbd>y</kbd></td><td>robust / full y-range</td></tr>
       <tr><td><kbd>r</kbd> or double-click</td><td>reset zoom</td></tr>
       <tr><td><kbd>0</kbd>–<kbd>4</kbd></td><td>set VI quality (4 = confident … 0 = no info)</td></tr>
-      <tr><td><kbd>/</kbd></td><td>focus filter box. Space-separated terms must all match: <code>z&gt;1.5</code>, <code>0.79&lt;z&lt;0.81</code>, <code>dchi2&lt;25</code>, <code>ELG</code>, <code>nodata</code>, <code>!QSO</code> (not),
+      <tr><td><kbd>/</kbd></td><td>focus filter box. Space-separated terms must all match: <code>z&gt;1.5</code>, <code>0.79&lt;z&lt;0.81</code>, <code>dchi2&lt;25</code>, <code>tile=1496</code>, <code>ELG</code>, <code>sv3</code>, <code>nodata</code>, <code>!QSO</code> (not),
         fibers <code>10,20,30-40,50:60</code> (<code>a-b</code> inclusive, <code>a:b</code> excludes b), TARGETIDs <code>3962…,3962…</code>.
         Deep link: <code>#q=…</code></td></tr>
       <tr><td><kbd>?</kbd> / <kbd>Esc</kbd></td><td>show / hide this help</td></tr>
@@ -431,6 +431,16 @@ const T = D.targets;
 // alternate redrock fits arrive as compact arrays [z, spectype, subtype, Δχ² vs best, zwarn, dup(, model row)];
 // m = row of AMODEL holding this fit's own redrock model, or -1 (not stored)
 for (const t of T) if (t.fits) t.fits = t.fits.map(([z, st, sub, dchi2, zw, dup, m = -1]) => ({ z, st, sub, dchi2, zw, dup, m }));
+// t.key: the spectrum's unique key, which keys the VI.  D.keycols comes from the grouping (SPGRP):
+// TILEID FIBER NIGHT (EXPID) for tile-based pages, SURVEY PROGRAM TARGETID for healpix/uniqpix,
+// ROW (row on this page) if nothing else is unique.
+const KEYF = { TILEID: t => t.tileid, FIBER: t => t.fiber, NIGHT: t => t.night, EXPID: t => t.expid,
+               SURVEY: t => t.survey, PROGRAM: t => t.program, TARGETID: t => t.targetid, ROW: t => t.i };
+for (const t of T) t.key = D.keycols.map(c => KEYF[c](t)).join(":");
+// other spectra of the same (real) target on this page: other tiles, nights, surveys/programs
+const SAME = new Map();
+for (const t of T) if (!t.targetid.startsWith("-")) SAME.set(t.targetid, [...(SAME.get(t.targetid) || []), t.i]);
+const MULTITILE = new Set(T.map(t => t.tileid)).size > 1;
 let FLUX, NOISE, MODEL, MHIDE;   // MHIDE[p]=1: data masked AND pipeline model == 0
 let AMODEL, AHIDE;               // the same for alternate-fit models (rows: see t.fits[k].m)
 const row = (arr, i) => arr ? arr.subarray(i * NW, (i + 1) * NW) : null;
@@ -598,19 +608,19 @@ function parseIdList(tok) {
   return { fibers, tids, list: tok.includes(",") || /\d[-:]\d/.test(tok) };
 }
 // Filter query: whitespace-separated terms, all must match.  A term is one of
-//   z>1.5  0.79<z<0.81  1.2<=z   (fields z dchi2 fiber snr zwarn; ops < > <= >= =; no spaces inside)
+//   z>1.5  0.79<z<0.81  1.2<=z   (fields z dchi2 fiber tile night snr zwarn; ops < > <= >= =; no spaces inside)
 //   10,20,30-40  3962...  (fiber / TARGETID list, see parseIdList)
 //   ELG  nodata  ...      (case-insensitive substring of the target's labels)
 //   !term                 (negation of any of the above)
 // Terms that look like comparisons but don't parse are returned in `bad` and ignored.
-const FIELDS = { z: zval, dchi2: dchi2val, fiber: t => t.fiber, snr: medSNR, zwarn: t => t.zwarn };
+const FIELDS = { z: zval, dchi2: dchi2val, fiber: t => t.fiber, tile: t => t.tileid, night: t => t.night, snr: medSNR, zwarn: t => t.zwarn };
 const CMP = { "<": (a, b) => a < b, ">": (a, b) => a > b, "<=": (a, b) => a <= b, ">=": (a, b) => a >= b, "=": (a, b) => a == b };
 const isNum = s => s !== "" && isFinite(+s);
 function compileTerm(tok) {
   if (tok.startsWith("!")) { const f = tok.length > 1 && compileTerm(tok.slice(1)); return f && (t => !f(t)); }
   const ids = parseIdList(tok);
   if (ids && (ids.list || ids.tids.size || ids.fibers.length)) return t =>
-    ids.tids.has(t.targetid) || ids.fibers.some(([a, b]) => t.fiber >= a && t.fiber <= b) ||
+    ids.tids.has(t.targetid) || (t.fiber != null && ids.fibers.some(([a, b]) => t.fiber >= a && t.fiber <= b)) ||
     // a single long number that is not an exact TARGETID still works as a partial TARGETID search
     (!ids.list && ids.tids.size === 1 && !ids.fibers.length && t.targetid.includes(tok));
   if (/[<>=]/.test(tok)) {
@@ -626,7 +636,7 @@ function compileTerm(tok) {
     return null;
   }
   const up = tok.toUpperCase();
-  return t => [noData(t) ? "NODATA" : "", isUnassigned(t) ? "UNASSIGNED" : "", t.targetid, t.fiber, t.spectype, t.subtype, t.objtype, t.morph, ...t.classes].join(" ").toUpperCase().includes(up);
+  return t => [noData(t) ? "NODATA" : "", isUnassigned(t) ? "UNASSIGNED" : "", t.targetid, t.fiber, t.spectype, t.subtype, t.objtype, t.morph, t.survey, t.program, ...t.classes].join(" ").toUpperCase().includes(up);
 }
 function compileQuery(q) {
   const preds = [], bad = [];
@@ -641,10 +651,10 @@ function rebuildOrder() {
   $("qerr").textContent = bad.length ? `Ignored (can't parse): ${bad.join("  ")}` : "";
   let o = T.map((_, i) => i).filter(i => {
     const t = T[i];
-    return match(t) && (!zw || t.zwarn) && (!ns || !isSky(t)) && (!nv || !S.vi[t.targetid]);
+    return match(t) && (!zw || t.zwarn) && (!ns || !isSky(t)) && (!nv || !S.vi[t.key]);
   });
   const key = $("sort").value;
-  const kf = { i: i => i, fiber: i => T[i].fiber, z: i => zval(T[i]) ?? -1, dchi2: i => dchi2val(T[i]) ?? -1, snr: i => medSNR(T[i]) }[key];
+  const kf = { i: i => i, fiber: i => (T[i].tileid ?? 0) * MAXFIBER + (T[i].fiber ?? -1), z: i => zval(T[i]) ?? -1, dchi2: i => dchi2val(T[i]) ?? -1, snr: i => medSNR(T[i]) }[key];
   o.sort((a, b) => kf(a) - kf(b));
   S.order = o;
   renderList(); if (S.view === "grid") renderGallery();
@@ -653,9 +663,9 @@ function rebuildOrder() {
 function renderList() {
   const L = $("list");
   L.innerHTML = S.order.map(i => {
-    const t = T[i], v = S.vi[t.targetid];
+    const t = T[i], v = S.vi[t.key];
     return `<div class="item${i === S.cur ? " sel" : ""}" data-i="${i}" role="option" aria-selected="${i === S.cur}">
-      <div class="a num">${t.fiber ?? "#" + i} ${badges(t, 2)}</div>
+      <div class="a num">${shortLabel(t)} ${badges(t, 2)}</div>
       <div class="z num">${noFit(t) ? "" : `z ${fmt(t.z, 4)}`}</div>
       <div class="b">${noFit(t) ? "no redrock fit" : `${esc(t.spectype ?? "")}${t.subtype ? " " + esc(t.subtype) : ""} · ΔΧ² ${fmt(t.deltachi2, 0)}`}</div>
       <div class="meta">${t.zwarn ? `<span class="status bad">${ICON_BAD}</span>` : ""}${v ? `<span class="vi-dot q${v.q}">${v.q}</span>` : ""}</div>
@@ -1061,10 +1071,25 @@ function renderPanels() {
 }
 
 /* ================= info panels ================= */
+// Where a spectrum comes from: ["main/dark", "tile 1496", "night 20240214", "exp 123"], the parts
+// known for it; with `ref`, only the parts that differ from spectrum `ref` (for "also on ..." links).
+function whereParts(t, ref) {
+  const parts = [[t.survey ? `${t.survey}/${t.program || "?"}` : "", r => r.survey + r.program],
+    [t.tileid != null ? `tile ${t.tileid}` : "", r => r.tileid], [t.night != null ? `night ${t.night}` : "", r => r.night],
+    [t.expid != null ? `exp ${t.expid}` : "", r => r.expid]];
+  return parts.filter(([s, f]) => s && (!ref || f(t) !== f(ref))).map(([s]) => s);
+}
+// list / grid label: fiber (tile:fiber on multi-tile pages), else #row
+const shortLabel = t => t.fiber == null ? "#" + t.i : MULTITILE ? `${t.tileid}:${t.fiber}` : `${t.fiber}`;
+
 function renderInfo() {
   const i = S.cur, t = T[i], zz = zcur(i);
-  $("t-title").textContent = t.fiber == null ? `Spectrum ${i}` : t.objtype === "SKY" ? `Sky fiber ${t.fiber}` : isUnassigned(t) ? `Unassigned fiber ${t.fiber}` : `Fiber ${t.fiber}`;
-  $("t-sub").innerHTML = `<span class="mono">${t.targetid}</span> · tile ${t.tileid ?? "—"}`;
+  $("t-title").textContent = t.fiber == null ? `Target ${t.targetid}` : t.objtype === "SKY" ? `Sky fiber ${t.fiber}` : isUnassigned(t) ? `Unassigned fiber ${t.fiber}` : `Fiber ${t.fiber}`;
+  const also = (SAME.get(t.targetid) || []).filter(j => j !== i);
+  $("t-sub").innerHTML = [t.fiber == null ? "" : `<span class="mono">${t.targetid}</span>`, ...whereParts(t).map(esc),
+    also.length ? `also ${also.map(j => `<a href="#" data-goto="${j}" title="same TARGETID">${esc(whereParts(T[j], t).join(" ") || "#" + j)}</a>`).join(", ")}` : ""]
+    .filter(Boolean).join(" · ");
+  $("t-sub").querySelectorAll("[data-goto]").forEach(a => a.onclick = e => { e.preventDefault(); select(+a.dataset.goto); });
   $("t-badges").innerHTML = badges(t, 9);
   const snr = Object.entries(t.snr).map(([b, v]) => `${b} ${fmt(v, 1)}`).join(" · ");
   $("facts").innerHTML = [
@@ -1123,24 +1148,26 @@ function renderInfo() {
 const QLAB = { 4: "sure", 3: "probable", 2: "possible", 1: "unlikely", 0: "no info" };
 $("viq").innerHTML = [4, 3, 2, 1, 0].map(q => `<button data-q="${q}" aria-pressed="false" title="key ${q}">${q}<small>${QLAB[q]}</small></button>`).join("");
 function renderVI() {
-  const t = T[S.cur], v = S.vi[t.targetid];
+  const t = T[S.cur], v = S.vi[t.key];
   $("viq").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", v && +b.dataset.q === v.q ? "true" : "false"));
   $("vitype").value = v?.spectype || ""; $("vicom").value = v?.comment || "";
   $("viz").textContent = v ? fmt(v.z, 5) : fmt(zcur(S.cur), 5) + " (unsaved)";
 }
 function setVI(patch) {
-  const t = T[S.cur], prev = S.vi[t.targetid] || { q: null, comment: "", spectype: "" };
-  S.vi[t.targetid] = { ...prev, ...patch, z: zcur(S.cur), ts: new Date().toISOString() };
+  const t = T[S.cur], prev = S.vi[t.key] || { q: null, comment: "", spectype: "" };
+  S.vi[t.key] = { ...prev, ...patch, z: zcur(S.cur), ts: new Date().toISOString() };
   saveVI(); renderVI(); renderList();
 }
 $("viq").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setVI({ q: +b.dataset.q }); });
 $("vitype").addEventListener("change", e => setVI({ spectype: e.target.value }));
 $("vicom").addEventListener("change", e => setVI({ comment: e.target.value }));
-$("viclear").onclick = () => { delete S.vi[T[S.cur].targetid]; saveVI(); renderVI(); renderList(); };
+$("viclear").onclick = () => { delete S.vi[T[S.cur].key]; saveVI(); renderVI(); renderList(); };
 $("viexport").onclick = () => {
-  const head = "TARGETID,FIBER,TILEID,VI_QUALITY,VI_SPECTYPE,VI_Z,VI_COMMENT,RR_SPECTYPE,RR_Z,RR_ZWARN,RR_DELTACHI2,TIMESTAMP";
-  const rows = T.filter(t => S.vi[t.targetid]).map(t => { const v = S.vi[t.targetid];
-    return [t.targetid, t.fiber, t.tileid, v.q ?? "", v.spectype || "", v.z?.toFixed(6), `"${(v.comment || "").replace(/"/g, '""')}"`, t.spectype, t.z?.toFixed(6), t.zwarn, t.deltachi2, v.ts].join(","); });
+  // TARGETID, SURVEY, PROGRAM always; then the rest of the key (TILEID, FIBER, NIGHT, EXPID on tile pages)
+  const ids = ["TARGETID", "SURVEY", "PROGRAM", ...D.keycols.filter(c => !["TARGETID", "SURVEY", "PROGRAM", "ROW"].includes(c))];
+  const head = [...ids, "VI_QUALITY,VI_SPECTYPE,VI_Z,VI_COMMENT,RR_SPECTYPE,RR_Z,RR_ZWARN,RR_DELTACHI2,TIMESTAMP"].join(",");
+  const rows = T.filter(t => S.vi[t.key]).map(t => { const v = S.vi[t.key];
+    return [...ids.map(c => KEYF[c](t) ?? ""), v.q ?? "", v.spectype || "", v.z?.toFixed(6), `"${(v.comment || "").replace(/"/g, '""')}"`, t.spectype, t.z?.toFixed(6), t.zwarn, t.deltachi2, v.ts].join(","); });
   const blob = new Blob([[head, ...rows].join("\n") + "\n"], { type: "text/csv" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `vi_${D.source.replace(/\.fits.*$/, "")}.csv`; a.click();
 };
@@ -1149,9 +1176,9 @@ $("viexport").onclick = () => {
 const thumbCache = new Map();
 function renderGallery() {
   $("gcount").textContent = `${S.order.length} spectra`;
-  $("cards").innerHTML = S.order.map(i => { const t = T[i], v = S.vi[t.targetid];
+  $("cards").innerHTML = S.order.map(i => { const t = T[i], v = S.vi[t.key];
     return `<div class="card gcard${i === S.cur ? " sel" : ""}" data-i="${i}">
-      <div class="gh"><span class="num"><b>${t.fiber ?? "#" + i}</b> ${badges(t)}</span>${zwarnBadge(t)}</div>
+      <div class="gh"><span class="num"><b>${shortLabel(t)}</b> ${badges(t)}</span>${zwarnBadge(t)}</div>
       <canvas></canvas>
       <div class="gf num"><span>${noFit(t) ? "no redrock fit" : `${esc(t.spectype ?? "")} z=${fmt(t.z, 4)}`}</span><span>${noFit(t) ? "" : `ΔΧ² ${fmt(t.deltachi2, 0)}`}${v ? ` <span class="vi-dot q${v.q}">${v.q}</span>` : ""}</span></div></div>`; }).join("");
   const cards = [...$("cards").querySelectorAll(".gcard")];

@@ -15,7 +15,9 @@ import pytest
 
 from prospect2.page import make_html
 from prospect2.util import parse_fiberlist
-from prospect2.test.util import synthetic_spectra, synthetic_zcat, synthetic_models, decode_q2, payload_from_html
+from prospect2.test.util import (synthetic_spectra, synthetic_zcat, synthetic_models, decode_q2, payload_from_html,
+                                 TARGETID0)
+from prospect2.test.test_grouping import tile_spectra, healpix_spectra
 
 pytestmark = pytest.mark.browser
 
@@ -118,7 +120,7 @@ def test_minimal_fibermap_page(tmp_path):
     sp = synthetic_spectra(nspec=2)
     sp.fibermap = Table(dict(TARGETID=sp.fibermap['TARGETID']))
     js = _run_page(make_html(sp, alt_models=0), INFO_JS, tmp_path)
-    assert js['radec'] == 'no coordinates' and js['cut'] and js['title'] == 'Spectrum 1'
+    assert js['radec'] == 'no coordinates' and js['cut'] and js['title'] == f'Target {TARGETID0 + 1}'
     assert js['provHidden'] is False and js['prov'] == 'sourceprospect2' and js['tooltip'] == ''
 
 
@@ -129,3 +131,34 @@ def test_provenance_display(tmp_path):
     js = _run_page(html, INFO_JS, tmp_path)
     assert js['tooltip'] == 'redrock: redrock-x.fits\nmodel: rrmodel-x.fits'
     assert js['prov'] == 'sourcecoadd-x.fitsredrockredrock-x.fitsmodelrrmodel-x.fits'
+
+
+#- reports the VI keys, list labels, and the title bar of the selected spectrum (#i=1)
+KEYS_JS = """<script>
+setTimeout(() => {
+  console.log("P2CHECK " + JSON.stringify({keys: T.map(t => t.key), labels: T.map(shortLabel),
+    title: $("t-title").textContent, sub: $("t-sub").textContent,
+    goto: [...$("t-sub").querySelectorAll("[data-goto]")].map(a => +a.dataset.goto)}));
+}, 3000);
+</script>
+</body>"""
+
+
+def test_tile_keys_and_labels(tmp_path):
+    #- same targets on two tiles: VI keys TILEID:FIBER:NIGHT, tile:fiber labels, "also" links
+    a, b = tile_spectra(1496, nspec=2), tile_spectra(2000, night=20250101, nspec=2)
+    js = _run_page(make_html([a, b], alt_models=0), KEYS_JS, tmp_path)
+    assert js['keys'] == ['1496:0:20240214', '1496:1:20240214', '2000:0:20250101', '2000:1:20250101']
+    assert js['labels'] == ['1496:0', '1496:1', '2000:0', '2000:1']
+    assert js['title'] == 'Fiber 1'
+    assert js['sub'] == f'{TARGETID0 + 1} · main/dark1b · tile 1496 · night 20240214 · also tile 2000 night 20250101'
+    assert js['goto'] == [3]
+
+
+def test_healpix_keys_and_labels(tmp_path):
+    a, b = healpix_spectra('main', 'dark', nspec=2), healpix_spectra('sv3', 'dark', nspec=2)
+    js = _run_page(make_html([a, b], alt_models=0), KEYS_JS, tmp_path)
+    assert js['keys'] == [f'{s}:dark:{TARGETID0 + i}' for s in ('main', 'sv3') for i in range(2)]
+    assert js['labels'] == ['#0', '#1', '#2', '#3']
+    assert js['title'] == f'Target {TARGETID0 + 1}'
+    assert js['sub'] == 'main/dark · also sv3/dark' and js['goto'] == [3]

@@ -23,6 +23,8 @@ DESI package layout (as desispec): `bin/` scripts work with `bin/` on `$PATH` an
 - `py/prospect2/io.py`: companion-file discovery (`find_redrock_files`), `read_redshifts`,
   `read_rrmodel`, `read_rrdetails`, line lists, `DATADIR`.
 - `py/prospect2/models.py`: redrock models (templates, per-camera, merge, alternate fits).
+- `py/prospect2/grouping.py`: SPGRP detection and the unique key (TILEID/FIBER/NIGHT or
+  SURVEY/PROGRAM/TARGETID) that keys VI.
 - `py/prospect2/encode.py`: "q2" payload packing.
 - `py/prospect2/util.py`: `-f`/`-t` selection, output naming.
 - Logging uses `desiutil.log.get_logger()`, not `print`.

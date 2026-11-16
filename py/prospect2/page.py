@@ -21,6 +21,7 @@ from .encode import encode, encode_model
 from .models import camera_models, merge_camera_models, alt_fit_models
 from .io import DATADIR, read_lines
 from .util import fibermap_value
+from .grouping import grouping_columns, concat_columns, key_columns
 
 #- redrock's "same redshift" criterion for marking near-duplicate alternate fits
 _DUP_KMS = 1000
@@ -86,7 +87,9 @@ def _combine(spectra, zcat, models, fits):
     """
     Stack lists of inputs (one entry per input file) into single objects,
     raising ValueError if the redrock template versions differ (models computed
-    from templates must use the templates of the fit).
+    from templates must use the templates of the fit).  Also returns the
+    per-row grouping values (grouping.grouping_columns), read before stacking
+    because stack keeps only the first input's headers.
     """
     from desispec.spectra import stack
     n = len(spectra)
@@ -104,6 +107,7 @@ def _combine(spectra, zcat, models, fits):
                                  f'(keyword: (input 0, input {i})): {diff}')
     elif any(z is not None for z in zcats):
         raise ValueError('some inputs have redshifts and some do not')
+    groups = concat_columns([grouping_columns(s) for s in spectra])
     sp = stack(list(spectra))
     if zcat is not None:
         zcat = vstack(list(zcat), metadata_conflicts='silent')
@@ -111,14 +115,17 @@ def _combine(spectra, zcat, models, fits):
         models = {b: np.concatenate([m[b] for m in models]) for b in models[0]}
     if fits is not None:
         fits = [f for flist in fits for f in flist]
-    return sp, zcat, models, fits
+    return sp, zcat, models, fits, groups
 
 
 def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provenance=None,
-                 alt_models=2, alt_max_dchi2=100, model_precision=100, alt_model_precision=30):
+                 alt_models=2, alt_max_dchi2=100, model_precision=100, alt_model_precision=30,
+                 groups=None):
     """
     The page's data payload (a JSON-serializable dict); see make_html for the
-    arguments.  Inputs must already be single objects (not lists).  The keys,
+    arguments.  Inputs must already be single objects (not lists).  `groups`
+    (internal) are the per-row grouping values of stacked inputs; default
+    grouping.grouping_columns(spectra).  The keys,
     and how to add one, are listed in doc/implementation.md "Payload contents";
     keep that in sync.
     """
@@ -143,6 +150,9 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
 
     #- inputs must be row-matched to spectra
     tids = np.asarray(sp.fibermap['TARGETID'])
+    if groups is None:
+        groups = grouping_columns(sp)
+    spgrp, keycols = key_columns(groups, tids)
     if zcat is not None:
         ztids = np.asarray(zcat['TARGETID'])
         if len(ztids) != nspec or np.any(ztids != tids):
@@ -235,11 +245,11 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
         r = fm[i]
         col = lambda *names, default=None: fibermap_value(fm, i, *names, default=default)
         allclass, primary = target_classes(r)
-        fiber, tileid = col('FIBER'), col('TILEID')
         fiberstatus = int(col('COADD_FIBERSTATUS', 'FIBERSTATUS', default=0))
         t = dict(
             i=i, targetid=str(int(r['TARGETID'])),
-            fiber=None if fiber is None else int(fiber), tileid=None if tileid is None else int(tileid),
+            fiber=groups['FIBER'][i], tileid=groups['TILEID'][i], night=groups['NIGHT'][i],
+            expid=groups['EXPID'][i], survey=groups['SURVEY'][i] or '', program=groups['PROGRAM'][i] or '',
             ra=_num(col('TARGET_RA'), 6), dec=_num(col('TARGET_DEC'), 6),
             objtype=str(col('OBJTYPE', default='')), morph=str(col('MORPHTYPE', default='')).strip(),
             classes=allclass, primary=primary,
@@ -275,6 +285,7 @@ def make_payload(spectra, zcat=None, models=None, fits=None, title=None, provena
         redrock=provenance.get('redrock') if zcat is not None else None,
         model_source=model_source,
         rrdetails=provenance.get('rrdetails'),
+        spgrp=spgrp, keycols=keycols,
         wave0=float(wave[0]), dwave=float(dw[0]), nwave=len(wave), nspec=nspec,
         flux_unit='1e-17 erg/s/cm²/Å',
         targets=targets,
@@ -316,7 +327,12 @@ def make_html(spectra, zcat=None, models=None, fits=None, title=None, provenance
             cameras), e.g. from read_spectra(); or a list of them, which are
             stacked after checking that their redrock template versions agree.
             When passing one Spectra built by stacking several inputs yourself,
-            you are responsible for that consistency.
+            you are responsible for that consistency, and only the first
+            input's headers (SPGRP, NIGHT, SURVEY, PROGRAM) survive the
+            stack, so pass the list instead.  Spectra are keyed for VI by
+            TILEID/FIBER/NIGHT(/EXPID) for tile-based groupings (SPGRP
+            cumulative, pernight, perexp) and by SURVEY/PROGRAM/TARGETID for
+            healpix/uniqpix; mixing groupings raises ValueError.
 
     Options (each row-matched to spectra; for a list of spectra, a list of the same length):
         zcat: redrock REDSHIFTS table; default spectra.redshifts
@@ -339,8 +355,10 @@ def make_html(spectra, zcat=None, models=None, fits=None, title=None, provenance
     ValueError if the inputs are not row-matched or consistent.
     """
     if isinstance(spectra, (list, tuple)):
-        spectra, zcat, models, fits = _combine(spectra, zcat, models, fits)
-    payload = make_payload(spectra, zcat=zcat, models=models, fits=fits, title=title,
+        spectra, zcat, models, fits, groups = _combine(spectra, zcat, models, fits)
+    else:
+        groups = None
+    payload = make_payload(spectra, zcat=zcat, models=models, fits=fits, title=title, groups=groups,
                            provenance=provenance, alt_models=alt_models, alt_max_dchi2=alt_max_dchi2,
                            model_precision=model_precision, alt_model_precision=alt_model_precision)
     return render_html(payload)

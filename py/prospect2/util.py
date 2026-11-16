@@ -57,7 +57,9 @@ def select_spectra(fibermap, fibers=None, targetids=None):
         return np.ones(len(fibermap), dtype=bool)
     keep = np.zeros(len(fibermap), dtype=bool)
     if fibers:
-        keep |= np.isin(fibermap['FIBER'], parse_fiberlist(fibers))
+        if 'FIBER' not in fibermap.colnames:
+            raise ValueError('these spectra have no FIBER column (e.g. a healpix coadd); select with -t TARGETIDs')
+        keep |=np.isin(fibermap['FIBER'], parse_fiberlist(fibers))
     if targetids:
         keep |= np.isin(fibermap['TARGETID'], [int(t) for t in targetids.replace(' ', '').split(',') if t])
     return keep

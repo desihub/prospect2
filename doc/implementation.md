@@ -69,8 +69,29 @@ User decisions:
   fibermap column is optional (`util.fibermap_value`): missing values become None/'' and show as
   "—"; `COADD_EXPTIME`/`COADD_FIBERSTATUS` fall back to the per-exposure `EXPTIME`/`FIBERSTATUS`;
   missing `COADD_NUMEXP` means 1 exposure (user); missing `OBJTYPE` means "target" if TARGETID ≥ 0;
-  no `FIBER` shows the row as "Spectrum i" / "#i", never as a fiber number; no coordinates hide
-  the cutout and Legacy Viewer link.
+  no `FIBER` shows the row as "Target <TARGETID>" / "#i", never as a fiber number; no coordinates
+  hide the cutout and Legacy Viewer link.
+- *The grouping decides the unique key* (`grouping.py`; user decisions 2026-11-15). DESI groups
+  spectra by tile (SPGRP cumulative/pernight/perexp: a TARGETID can be on several tiles) or across
+  tiles (healpix/uniqpix: one coadd per TARGETID per SURVEY/PROGRAM, never across them), and never
+  mixes the two, so mixing raises. Before 2026-11-15 VI was keyed by TARGETID alone, which merged the
+  VI of one target on two tiles.
+  - Tile-based key: TILEID, FIBER, NIGHT (NIGHT = LASTNIGHT for cumulative; kept in the key even when
+    unneeded, for bookkeeping, user choice), + EXPID when the fibermap has it (uncoadded spectra).
+    Cross-tile key: SURVEY, PROGRAM, TARGETID. No SPGRP: tile-based if TILEID and FIBER are known,
+    else TARGETID. The key is checked; if not unique, VI is keyed by row (`ROW`) with a warning.
+  - Values come from fibermap columns, else headers. Headers are read *per input before stacking*:
+    `stack` keeps at most the first input's headers. A single pre-stacked Spectra therefore loses
+    the other inputs' NIGHT/SURVEY/PROGRAM (documented; pass a list).
+  - PROGRAM: the primary header's (healpix grouping, e.g. `dark`), else the fibermap header's
+    FAPRGRM (the tile's, e.g. `dark1b`). These differ: `main-dark-9901` (uniqpix, `dark`) includes
+    tile 100614 (`DARK1B`). Harmless, since groupings are never mixed.
+  - The VI export always has TARGETID, SURVEY, PROGRAM, then the remaining key columns (user: keep
+    TARGETID on tile pages even though it isn't part of the key). It doesn't follow prospect1's VI
+    format (user: not needed).
+  - The JS builds `t.key` from `D.keycols` (nothing extra per target in the payload). Other spectra
+    of the same TARGETID on the page are linked under the title ("also tile 2000 night …"); this is
+    a Map built at load, no payload cost. Multi-tile pages label list rows `tile:fiber`.
 - File names for the page come from `provenance=dict(source, redrock, model_source, rrdetails)`,
   all optional. They are shown without using screen space (user, 2026-11-15): as a tooltip on
   the page name in the header, and under "Made from" in the `?` help overlay (the header name is
@@ -202,6 +223,7 @@ Top level (`D.x`):
 | `redrock`, `model_source`, `rrdetails` | provenance file names (or `'input models'`, `'redrock templates + COEFF'`), or null; shown in the header tooltip and help overlay |
 | `wave0`, `dwave`, `nwave` | the merged linear wavelength grid (`coadd_cameras`); JS `WAVE`, `NW` |
 | `nspec`, `flux_unit` | number of spectra; flux unit label |
+| `spgrp`, `keycols` | the inputs' SPGRP (or null) and the columns of the unique key that keys the VI (`grouping.key_columns`) |
 | `targets` | one dict per spectrum, row order = data rows (below) |
 | `lines` | emission/absorption line lists (`io.read_lines`) |
 | `overlaps` | camera overlap regions `[lo, hi, label]` |
@@ -209,7 +231,8 @@ Top level (`D.x`):
 | `amodel`, `amscale`, `alt_models` | only when alternate-fit models exist: their rows, and the `--alt-models`/`--alt-max-dchi2` settings |
 
 `targets[i]` (JS `T[i]`), all plain JSON:
-- Always: `i`, `targetid` (**string**, int64 > 2^53), `fiber`, `tileid`, `ra`, `dec`, `objtype`,
+- Always: `i`, `targetid` (**string**, int64 > 2^53), `fiber`, `tileid`, `night`, `expid`, `survey`,
+  `program` (grouping values, `grouping.grouping_columns`), `ra`, `dec`, `objtype`,
   `morph`, `classes`/`primary` (target-bit names), `mag` (`{g, r, z, w1, w2}`), `fibermag_r`,
   `ebv`, `exptime`, `numexp`, `fiberstatus`, `fiberstatus_names`, `snr` (`{band: median S/N}`),
   `masked_cams` (`[lo, hi, band]` for cameras with no unmasked pixels). Values from optional
@@ -352,8 +375,10 @@ TARGETID (stuck sky fibers).
   (not treated as "match nothing"). Commas only join fiber/TARGETID lists, not terms.
 - Deep links: `#i=7&s=3&view=grid&theme=dark&q=<filter>&ls=&lc=&lg=`. The hash is kept current
   on select and filter.
-- VI (visual inspection, quality 0–4) is stored in localStorage keyed by source file and exported
-  as CSV. There is no server.
+- VI (visual inspection, quality 0–4) is stored in localStorage per source file, each entry keyed
+  by the spectrum's unique key (see "Python API"), and exported as CSV. There is no server.
+- Sort by fiber sorts by tile, then fiber. The filter has `tile` and `night` fields, and survey and
+  program are text-matched.
 - Light and dark themes are supported. The canvas reads CSS custom properties, so re-render on
   theme change (`rethemed`). The ◐ button flips to the opposite of the theme currently shown (pages start
   by following the OS setting). It used to cycle auto → light → dark, which needed two clicks to
