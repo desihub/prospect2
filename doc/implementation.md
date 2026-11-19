@@ -137,6 +137,19 @@ Decisions:
 **Cameras are merged with `desispec.coaddition.coadd_cameras`**, onto a single linear wavelength
 grid. The JS assumes a linear grid (`wave0`, `dwave`), which is asserted in Python.
 
+**Future: per-camera display (planned, not built; discussed 2026-11-18).** The user will want to
+show the b/r/z cameras separately. Plan: keep the merged arrays and add, in a *minor* version, only
+the per-camera pixels inside the camera overlaps (flux, noise and model), each array with its own
+wavelength range. Outside the overlaps the merged spectrum *is* the single camera's data (measured
+on petal 4: identical, max difference 0.0), so merged + overlap pixels rebuild every camera
+exactly. Cost: 354 extra pixels per spectrum on a 7781-pixel grid (+4.5% pixel data). Pages without
+them still display (merged only); older code drops the new arrays with its newer-minor warning.
+Work needed then: arrays that don't span the whole grid (per-array range, checked in `PageData`),
+stitching the cameras in the JS, and `stack` for pages with and without them (probably drop with a
+warning, as for alternate models). Rejected: storing the cameras natively and merging in the JS.
+It is only ~2% smaller (7958 vs 7781 + 354 pixels) but rewrites the decoding and display core,
+and the merged view would no longer be `coadd_cameras` output.
+
 **The model is per camera, then merged with the flux's ivar weights** (`camera_models` /
 `read_rrmodel` → `merge_camera_models`).
 - prospect's `create_model` hard-cuts at mid-overlap, and the coadd_cameras model is an unweighted
