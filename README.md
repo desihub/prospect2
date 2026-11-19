@@ -57,8 +57,8 @@ A `PageData` has `fibermap` and `redshifts` (astropy Tables with DESI column nam
 TILEID, FIBER, TARGET_RA, FLUX_G, DESI_TARGET, …, Z, SPECTYPE, ZWARN, …), `extra` (prospect2's
 per-target values), `sources` (input files), and decoded `wave`, `flux`, `noise`, `model` arrays.
 Selecting and stacking are lossless: a stacked page has exactly the data a page made from the same
-spectra would. Edits to the tables are written; reorder with `p[order]`, not by sorting a table in
-place. `stack` refuses pages with different wavelength
+spectra would. Edits to the tables are written; reorder only with `p[order]`, never by sorting a table in
+place (that is caught only when it changes the TARGETID order). `stack` refuses pages with different wavelength
 grids or groupings, model vs no model, or the same spectrum twice. The page title (top left) is
 `stack(pages, title=...)`, `p.title = ...`, or `write_page(..., title=...)`; by default a selection
 keeps its page's title, and a stack is named after its single source file, else the output file. Pages hold a data format

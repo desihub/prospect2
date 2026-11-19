@@ -215,6 +215,34 @@ def test_other_row_space():
         with_arch(p, [[4, 0, 0], [0, 0, 0], [0, 0, 0]])
 
 
+def test_pr_review_fixes():
+    #- stack leaves its inputs unchanged (owner offsets were applied in place)
+    a, b = synthetic_page(nspec=4), synthetic_page(nspec=4, FIBER=[10, 11, 12, 13])
+    before = b.arrays['amodel']['owner'].copy()
+    s1 = stack([a, b])
+    assert np.array_equal(b.arrays['amodel']['owner'], before)
+    assert stack([a, b]).payload() == s1.payload()
+    #- selecting from a page whose fibermap was sorted in place is refused (it would adopt the sorted order)
+    p = synthetic_page(nspec=4)
+    p.redshifts = None
+    p.fibermap.sort('FIBER', reverse=True)
+    with pytest.raises(ValueError, match='no longer match'):
+        p[:]
+    #- ROW VI keys hash TARGETID + grouping values: two observations of one target in two orders differ
+    p = synthetic_page(nspec=2, owner=(), TARGETID=[5, 5], NIGHT=[20240101, 20240102])
+    k1, k2 = p[[0, 0, 1]].payload()['vi_key'], p[[1, 0, 0]].payload()['vi_key']
+    assert ':rows-' in k1 and k1 != k2
+
+
+def test_fibermap_value_masked_fallback():
+    #- after a stack with an outer join, a masked first-choice cell falls through to the next column
+    from astropy.table import Table, MaskedColumn
+    from prospect2.util import fibermap_value
+    fm = Table([MaskedColumn([900.0, 0.0], name='COADD_EXPTIME', mask=[False, True]),
+                MaskedColumn([0.0, 300.0], name='EXPTIME', mask=[True, False])])
+    assert [fibermap_value(fm, i, 'COADD_EXPTIME', 'EXPTIME') for i in range(2)] == [900.0, 300.0]
+
+
 def test_validation():
     p = synthetic_page(nspec=4)
     a = dict(p.arrays['amodel'], owner=np.array([[3, 1], [0, 1], [2, 1]]))     #- spectrum 3 has no fits

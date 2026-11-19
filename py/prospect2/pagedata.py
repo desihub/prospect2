@@ -442,6 +442,7 @@ class PageData:
     # ------------------------------------------------------------ selection
 
     def __getitem__(self, sel):
+        self._check_rows()      #- else a table sorted in place would become the new row order
         n = len(self)
         if isinstance(sel, np.ma.MaskedArray):
             sel = sel.filled(False)
@@ -768,10 +769,11 @@ class PageData:
         spgrp, keycols = key_columns(self._groups(), self.fibermap['TARGETID'])
         #- VI keys: the input file for a single-source page (so VI survives regenerating,
         #- selecting or restacking it), else the title.  ROW keys only mean something for this
-        #- exact list of spectra, so then also a hash of its TARGETIDs.
+        #- exact list of spectra, so then also a hash of its spectrum identities (TARGETID + grouping
+        #- values: TARGETID alone doesn't tell two observations of one target apart).
         vi_key = single or title
         if keycols == ['ROW']:
-            ids = ','.join(str(int(t)) for t in self.fibermap['TARGETID'])
+            ids = ';'.join(','.join('' if v is None else str(v) for v in ident) for ident in _identities(self))
             vi_key += ':rows-' + hashlib.sha1(ids.encode()).hexdigest()[:10]
 
         targets, columns = {}, dict(fibermap={}, redshifts=None)
@@ -929,7 +931,7 @@ def stack(pages, title=None):
         for k in _side_keys(a0):
             vals = [np.asarray(x[k]) for x in parts]
             if k == 'owner':
-                vals = [_owner(v) for v in vals]
+                vals = [_owner(v).copy() for v in vals]      #- copy: don't modify the inputs
                 for v, off in zip(vals, offset):
                     v[:, 0] += off
             a[k] = np.concatenate(vals)

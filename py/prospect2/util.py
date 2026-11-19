@@ -36,14 +36,17 @@ def parse_fiberlist(spec):
 
 def fibermap_value(fibermap, i, *names, default=None):
     """
-    Row `i` of the first of the columns `names` that `fibermap` has, else
-    `default` (also for a masked value).  Only TARGETID is required to make a
-    page; every other fibermap column it reads is optional, via this function.
+    Row `i` of the first of the columns `names` that `fibermap` has with an
+    unmasked value there, else `default`.  (A masked cell falls through to the
+    next column: a stack of pages with different columns has masked cells.)
+    Only TARGETID is required to make a page; every other fibermap column it
+    reads is optional, via this function.
     """
     for name in names:
         if name in fibermap.colnames:
             value = fibermap[name][i]
-            return default if np.ma.is_masked(value) else value
+            if not np.ma.is_masked(value):
+                return value
     return default
 
 

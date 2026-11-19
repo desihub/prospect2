@@ -412,6 +412,12 @@ write_page('qso.html', stack(pages))                           # cf. desispec st
   (e.g. `p[np.argsort(p.redshifts['Z'])]`). Writing or stacking a page whose `fibermap` or
   `redshifts` was sorted in place is an error, because the arrays and `extra` would then belong to
   other targets (review, 2026-11-18: `p.redshifts.sort('Z')` silently wrote wrong redshifts).
+  So is selecting from such a page (PR review: `p[...]` would otherwise adopt the sorted table as
+  the new row order). The check is a best-effort guard against the Spectra habit of sorting a
+  table: it compares TARGETID order only, so an in-place sort that only swaps rows of the same
+  TARGETID (two observations of one target) goes undetected. A hidden row-ID column would catch
+  it but would show in the user's tables and survive `vstack`; rejected (user, 2026-11-19: sort
+  only with `p[order]`).
   Constructed pages are checked: `owner` column 0 must be a spectrum index, alternate-fit
   (`alt`) `owner` rows must point to existing fits in `zfits`, `src` into `sources`. Selections copy `sources` and `alt_models`. `flux`, `noise`, `model`, `wave` are decoded lazily (float64).
 - `make_html` and the script go through `PageData.from_spectra`, so generated and stacked pages
@@ -431,8 +437,9 @@ write_page('qso.html', stack(pages))                           # cf. desispec st
 - Empty pages (a selection that matched nothing, e.g. a petal with no QSOs) are valid and stack;
   only writing one is an error.
 - If the spectra are not unique by their key (e.g. repeated indices `p[[3, 3]]`), VI is keyed by
-  row, and `vi_key` gets a hash of the page's TARGETID list, so row-keyed VI never carries over to
-  a different list of spectra. (VI saved on row-keyed pages from before 2026-11-18 is under the old
+  row, and `vi_key` gets a hash of the page's list of spectrum identities (TARGETID + grouping
+  values), so row-keyed VI never carries over to a different list of spectra. (PR review: hashing
+  TARGETIDs alone gave the same key to two orders of two observations of one target.) (VI saved on row-keyed pages from before 2026-11-18 is under the old
   key and no longer shows; such pages were rare, and pre-1.0 pages are unreadable anyway.)
 - No command-line tool yet (user, 2026-11-17): the use cases are unclear until there is
   experience with the API.
