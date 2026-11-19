@@ -16,23 +16,32 @@ DESI package layout (as desispec): `bin/` scripts work with `bin/` on `$PATH` an
 
 - `bin/plot_prospect2`: thin wrapper calling `prospect2.scripts.plot_prospect2` `parse()` / `main(args)`.
 - `py/prospect2/scripts/plot_prospect2.py`: CLI only: `parse()`, then `main(args)` finds and reads
-  the files, selects `-f`/`-t`, calls `make_html`, writes the page. Keep it minimal.
-- `py/prospect2/page.py`: **`make_html(spectra, zcat=, models=, fits=, ...)`**, the object-input
-  entry point (also `prospect2.make_html`); `make_payload` (dict) + `render_html` (template fill);
-  `write_html`.
+  the files, selects `-f`/`-t`, calls `PageData.from_spectra` and `io.write_page`. Keep it minimal.
+- `py/prospect2/page.py`: **`make_html(spectra, zcat=, models=, zfits=, ...)`**, the object-input
+  entry point (also `prospect2.make_html`) = `PageData.from_spectra(...).to_html()`; `make_payload`
+  (dict) + `render_html` (template fill).
+- `py/prospect2/pagedata.py`: **`PageData`** (Spectra-like: `fibermap`, `redshifts`, `extra`
+  tables, quantized `arrays`, slicing; `from_spectra`/`from_html`/`from_payload`, `payload`/`to_html`)
+  and **`stack(pages)`**. Builds every page, so generated and stacked pages share one code path.
+- `py/prospect2/_version.py`: `__version__` only (desiutil convention; its tools rewrite the file).
+- **The payload is versioned** (`pagedata.FORMAT_VERSION`): a change to stored payload keys needs
+  a version bump (see `doc/implementation.md` "Payload versioning"; `test_payload_keyset_guard`
+  enforces it).
 - `py/prospect2/io.py`: companion-file discovery (`find_redrock_files`), `read_redshifts`,
-  `read_rrmodel`, `read_rrdetails`, line lists, `DATADIR`.
+  `read_rrmodel`, `read_rrdetails`, line lists, `DATADIR`; `read_page`/`write_page` (PageData ↔
+  HTML file), `write_html`.
 - `py/prospect2/models.py`: redrock models (templates, per-camera, merge, alternate fits).
 - `py/prospect2/grouping.py`: SPGRP detection and the unique key (TILEID/FIBER/NIGHT or
   SURVEY/PROGRAM/TARGETID) that keys VI.
-- `py/prospect2/encode.py`: "q2" payload packing.
+- `py/prospect2/encode.py`: "q2" quantization (`quantize`), int8+escape split (`esc8`), gzip
+  packing (`pack`/`unpack`), and the Python decoder.
 - `py/prospect2/util.py`: `-f`/`-t` selection, output naming.
 - Logging uses `desiutil.log.get_logger()`, not `print`.
 - `py/prospect2/data/` (package data, found via `importlib.resources`):
   - `prospect2_template.html`: **the whole viewer app** (CSS + JS, one file). It's source code,
     not data, but lives here so installed packages can find it. The placeholders
-    `/*__UPLOT_CSS__*/`, `/*__UPLOT_JS__*/`, `"__DATA__"` and `__TITLE__` are filled by the
-    generator.
+    `/*__UPLOT_CSS__*/`, `/*__UPLOT_JS__*/`, `"__DATA__"`, `__TITLE__` and `__FORMAT_VERSION__` are
+    filled by the generator.
   - `vendor/`: uPlot 1.6.31 (MIT, see `uPlot.LICENSE`). Don't upgrade casually; the y-range hooks
     depend on its behavior.
   - `{emission,absorption}_lines.txt`: line lists (copied from prospect).
@@ -40,7 +49,9 @@ DESI package layout (as desispec): `bin/` scripts work with `bin/` on `$PATH` an
 - `pyproject.toml` (modeled on desiutil's) + `MANIFEST.in`. New package data files must match the
   `[tool.setuptools.package-data]` globs, and new `bin/` scripts must be added to `script-files`.
   Check with `python -m build --no-isolation --outdir <scratchpad>` and list the wheel; never
-  build into the repo (`MANIFEST.in` prunes `scratch/`).
+  build into the repo (`MANIFEST.in` prunes `scratch/`). `--no-isolation` still writes `build/` and
+  `py/prospect2.egg-info/` into the repo, and a stale `build/` leaks deleted modules into the next
+  wheel: remove both before and after.
 - `scratch/` (git-ignored, not in the repo) holds the test inputs and outputs:
   - `scratch/data/`: example inputs (petal 4, tile 1496: coadd, redrock, rrmodel, rrdetails).
   - `scratch/output/`: pages from this code.
@@ -100,6 +111,17 @@ pytest doesn't check pixels or layout. For visual changes, also verify by render
 
 ## Conventions and pitfalls
 
+- **Stop and discuss before breaking existing pages.** Pages written in payload format 1.0 or later
+  are meant to be kept and re-read (`read_page` → filter/`stack` → `write_page`, always rendered
+  with the *current* template). Before making any change that would stop the current code from
+  reading, or the current template from displaying, such a page, warn the user and discuss it
+  first, even when the change was requested as a new feature. That includes:
+  - raising the major `FORMAT_VERSION` (the template must display every page of its major);
+  - making the JS *require* a key that older pages of the same major lack;
+  - removing or renaming a stored key, or changing its meaning or q2 encoding.
+
+  Prefer additive, minor-version changes where the JS tolerates the key being missing. Pages from
+  before format 1.0 are already unreadable; that's accepted.
 - TARGETIDs must go to JS as **strings** (int64 > 2^53).
 - Never draw the model where the whole camera is masked, nor for spectra with no redrock fit
   (`noFit`).

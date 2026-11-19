@@ -16,7 +16,7 @@ import pytest
 from prospect2.page import make_html
 from prospect2.util import parse_fiberlist
 from prospect2.test.util import (synthetic_spectra, synthetic_zcat, synthetic_models, decode_q2, payload_from_html,
-                                 TARGETID0)
+                                 synthetic_page, TARGETID0)
 from prospect2.test.test_grouping import tile_spectra, healpix_spectra
 
 pytestmark = pytest.mark.browser
@@ -51,11 +51,11 @@ def _chrome():
     return None
 
 
-def _run_page(html, inject, tmp_path):
+def _run_page(html, inject, tmp_path, expect_error=None):
     """
     Load `html` with the script `inject` added before </body> in headless
-    Chrome; assert no JS errors; return the JSON that the script logged as
-    "P2CHECK <json>".
+    Chrome; assert no JS errors (or exactly the error `expect_error`, a
+    substring); return the JSON that the script logged as "P2CHECK <json>".
     """
     chrome = _chrome()
     if chrome is None:
@@ -70,7 +70,10 @@ def _run_page(html, inject, tmp_path):
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=60).stderr
     console = [line for line in out.splitlines() if 'CONSOLE' in line]
     errors = [line for line in console if 'Uncaught' in line or 'Error' in line]
-    assert not errors, '\n'.join(errors)
+    if expect_error:
+        assert errors and all(expect_error in e for e in errors), '\n'.join(errors) or 'no error'
+    else:
+        assert not errors, '\n'.join(errors)
     m = re.search(r'"P2CHECK (.*)", source', out)
     assert m, 'page did not report its check:\n' + '\n'.join(console)
     return json.loads(m.group(1))
@@ -162,3 +165,73 @@ def test_healpix_keys_and_labels(tmp_path):
     assert js['labels'] == ['#0', '#1', '#2', '#3']
     assert js['title'] == f'Target {TARGETID0 + 1}'
     assert js['sub'] == 'main/dark · also sv3/dark' and js['goto'] == [3]
+
+
+#- reports alternate-fit model rows and their owners, and the source shown for spectrum #i=1
+STACK_JS = """<script>
+setTimeout(() => {
+  const sums = [];
+  for (let r = 0; r < AMODEL.length / NW; r++) { let sm = 0; for (let k = 0; k < NW; k++) sm += AMODEL[r * NW + k]; sums.push(sm); }
+  const m = T.map(t => t.zfits ? t.zfits.map(f => f.m) : null);
+  console.log("P2CHECK " + JSON.stringify({sums, m, tooltip: $("srcname").title, tgt: $("tgt").textContent}));
+}, 3000);
+</script>
+</body>"""
+
+
+def test_stacked_page(tmp_path):
+    from prospect2 import stack
+    a = synthetic_page(nspec=3, source='coadd-a.fits', owner=((0, 1), (1, 2)))
+    b = synthetic_page(nspec=3, source='coadd-b.fits', owner=((0, 2),), FIBER=[10, 11, 12])
+    page = stack([a, b[[2, 1, 0]]])          #- b reversed: its alt row now belongs to spectrum 5
+    html = page.to_html()
+    js = _run_page(html, STACK_JS, tmp_path)
+    p = payload_from_html(html)
+    assert p['arrays']['amodel']['owner'] == [[0, 1], [1, 2], [5, 2]]
+    assert js['m'] == [[-1, 0, -1], [-1, -1, 1], None, None, [-1, -1, -1], [-1, -1, 2]]
+    amodel = decode_q2(p)[3].astype(np.float32)
+    assert np.allclose(js['sums'], amodel.astype(np.float64).sum(axis=1), rtol=1e-6)
+    assert js['tooltip'] == '2 sources:\ncoadd-a.fits\ncoadd-b.fits'
+    assert 'Sourcecoadd-a.fits' in js['tgt']
+
+
+BODY_JS = """<script>
+setTimeout(() => { console.log("P2CHECK " + JSON.stringify({body: document.body.textContent})); }, 1000);
+</script>
+</body>"""
+
+
+def test_incompatible_format_banner(tmp_path):
+    sp = synthetic_spectra(nspec=2)
+    html = make_html(sp, alt_models=0)
+    from prospect2.pagedata import FORMAT_VERSION
+    tag = f'"format_version":"{FORMAT_VERSION}"'
+    assert tag in html
+    js = _run_page(html.replace(tag, '"format_version":"9.0"'), BODY_JS, tmp_path, expect_error='page data format 9.0')
+    assert 'Incompatible page data' in js['body'] and 'format 9.0' in js['body']
+    #- a newer minor of the same major is displayed
+    major, minor = map(int, FORMAT_VERSION.split('.'))
+    newer_js = """<script>
+setTimeout(() => { console.log("P2CHECK " + JSON.stringify({
+  incompatible: [...document.querySelectorAll("h2")].some(h => h.textContent.includes("Incompatible")), ntargets: T.length})); }, 1000);
+</script>
+</body>"""
+    js = _run_page(html.replace(tag, f'"format_version":"{major}.{minor + 1}"'), newer_js, tmp_path)
+    assert js == dict(incompatible=False, ntargets=2)
+
+
+FACTS_JS = """<script>
+setTimeout(() => { console.log("P2CHECK " + JSON.stringify({facts: $("facts").textContent, nofit: T.map(noFit)})); }, 3000);
+</script>
+</body>"""
+
+
+def test_fit_display_with_partial_zcat(tmp_path):
+    #- a zcat without CHI2/DELTACHI2/NPIXELS still shows its fit; no zcat at all shows "no fit"
+    sp = synthetic_spectra(nspec=2)
+    zcat = synthetic_zcat(sp)
+    zcat.remove_columns(['CHI2', 'DELTACHI2', 'NPIXELS'])
+    js = _run_page(make_html(sp, zcat=zcat, models=synthetic_models(sp), alt_models=0), FACTS_JS, tmp_path)
+    assert js['nofit'] == [False, False] and 'GALAXY' in js['facts'] and '0.50000' in js['facts']
+    js = _run_page(make_html(sp, alt_models=0), FACTS_JS, tmp_path)
+    assert js['nofit'] == [True, True] and 'no fit' in js['facts']

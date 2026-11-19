@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pytest
 
-from prospect2.test.util import find_test_data, decode_q2, payload_from_html, TEST_TILE_FILE
+from prospect2.test.util import find_test_data, decode_q2, payload_from_html, target_rows, TEST_TILE_FILE
 
 DATADIR = find_test_data()
 pytestmark = pytest.mark.skipif(DATADIR is None, reason='no real test data (set $PROSPECT2_TEST_DATA)')
@@ -43,14 +43,14 @@ def page(tmp_path_factory):
 
 
 def _target(payload, fiber):
-    return next(t for t in payload['targets'] if t['fiber'] == fiber)
+    return next(t for t in target_rows(payload) if t['FIBER'] == fiber)
 
 
 def test_masked_fibers(page):
     payload, _ = page
     assert payload['nspec'] == NSPEC
     flux = decode_q2(payload)[0]
-    fibers = [t['fiber'] for t in payload['targets']]
+    fibers = payload['targets']['FIBER']
     t = _target(payload, 2036)
     assert np.all(np.isnan(flux[fibers.index(2036)]))
     assert t['numexp'] == 0 and [m[2] for m in t['masked_cams']] == ['b', 'r', 'z']
@@ -62,12 +62,13 @@ def test_masked_fibers(page):
 
 def test_model_source(page):
     payload, _ = page
-    assert payload['redrock'] == TEST_TILE_FILE.replace('coadd', 'redrock')
+    source, = payload['sources']
+    assert source['redrock'] == TEST_TILE_FILE.replace('coadd', 'redrock')
     rrmodel = _file('rrmodel')
     if rrmodel:
-        assert payload['model_source'] == os.path.basename(rrmodel)
+        assert source['model_source'] == os.path.basename(rrmodel)
     else:
-        assert payload['model_source'] == 'redrock templates + COEFF'
+        assert source['model_source'] == 'redrock templates + COEFF'
     #- no model drawn for spectra without a redrock fit (fiber 2036): the JS hides it,
     #- but the stored model must not be NaN anywhere
     assert np.all(np.isfinite(decode_q2(payload)[2]))
@@ -76,23 +77,21 @@ def test_model_source(page):
 @pytest.mark.skipif(_file('rrdetails', '.h5') is None if DATADIR else True, reason='no rrdetails file')
 def test_alternate_fits(page):
     payload, _ = page
-    with_fits = [t for t in payload['targets'] if 'fits' in t]
-    assert with_fits, 'no alternate fits on the page'
-    for t in payload['targets']:
-        if t['objtype'].strip() == 'SKY':
-            assert 'fits' not in t
+    targets = target_rows(payload)
+    assert any(t['zfits'] for t in targets), 'no alternate fits on the page'
+    for t in targets:
+        if t['OBJTYPE'] == 'SKY':
+            assert t['zfits'] is None
     if not HAVE_TEMPLATES:
-        assert 'amodel' not in payload
+        assert 'amodel' not in payload['arrays']
         return
     nalt = payload['alt_models']['n']
-    nrows = 0
-    for t in with_fits:
-        for k, f in enumerate(t['fits']):
-            if len(f) > 6:                           #- this fit has a stored model
-                nrows += 1
-                assert 1 <= k <= nalt and f[3] < payload['alt_models']['max_dchi2']
-                assert t['objtype'].strip() == 'TGT'
-    assert nrows == len(payload['amscale']) > 0
+    amodel = payload['arrays']['amodel']
+    assert len(amodel['owner']) == len(amodel['scale']) > 0
+    for i, k in amodel['owner']:                     #- (spectrum, fit) of each stored model
+        t = targets[i]
+        assert 1 <= k <= nalt and t['zfits'][k][3] < payload['alt_models']['max_dchi2']
+        assert t['OBJTYPE'] == 'TGT'
 
 
 @pytest.mark.skipif(not HAVE_TEMPLATES, reason='needs $RR_TEMPLATE_DIR')
@@ -108,8 +107,8 @@ def test_api_matches_script(page):
     sp = read_spectra(os.path.join(DATADIR, TEST_TILE_FILE), return_models=True, return_redshifts=True)
     sp = sp[select_spectra(sp.fibermap, fibers=FIBERS)]
     rrdetails = _file('rrdetails', '.h5')
-    fits = read_rrdetails(rrdetails, sp.redshifts) if rrdetails else None
+    zfits = read_rrdetails(rrdetails, sp.redshifts) if rrdetails else None
     provenance = dict(source=TEST_TILE_FILE, redrock=TEST_TILE_FILE.replace('coadd', 'redrock'),
                       model_source=os.path.basename(_file('rrmodel')),
                       rrdetails=os.path.basename(rrdetails) if rrdetails else None)
-    assert prospect2.make_html(sp, fits=fits, provenance=provenance) == html
+    assert prospect2.make_html(sp, zfits=zfits, provenance=provenance) == html

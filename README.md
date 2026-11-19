@@ -25,7 +25,7 @@ prospect2.write_html(html, 'mypage.html')
 ```
 
 `make_html` takes a `Spectra` or a list of them (stacked after checking that the redrock template
-versions agree), plus optional `zcat`, `models` and `fits` (alternate fits from `read_rrdetails`),
+versions agree), plus optional `zcat`, `models` and `zfits` (top redrock fits from `read_rrdetails`),
 each row-matched to the spectra. `zcat` and `models` default to `spectra.redshifts` and
 `spectra.model`; explicit arguments override them. Without models, they are computed from the
 redrock templates. Only the flux and a fibermap with TARGETID are required: other fibermap
@@ -34,7 +34,41 @@ columns (coordinates, photometry, `COADD_*`, …) are shown as "—" when missin
 model_source=, rrdetails=)` (all optional) names the input files; they are shown on hover over the
 page name and in the `?` help.
 
-Combining files: the grouping (header `SPGRP`) decides what identifies a spectrum, which keys the
+### Filtering and stacking existing pages
+
+Pages can be read back and filtered, combined and rewritten without the FITS files, in the same
+way as desispec `Spectra` (`read_spectra` → select → `stack` → `write_spectra`). Reading a
+500-spectrum page takes ~0.1 s, vs several seconds to generate it.
+
+```python
+import glob
+from prospect2 import read_page, write_page, stack
+from desitarget.targetmask import desi_mask
+
+pages = [read_page(f) for f in sorted(glob.glob('prospect-*-1496-thru20240214.html'))]
+qso = stack([p[(p.fibermap['DESI_TARGET'] & desi_mask.QSO) != 0] for p in pages])
+write_page('qso-1496.html', qso)
+hiz = qso[qso.redshifts['Z'] > 2]              # select like Spectra: mask, indices or slice
+hiz.title = 'Tile 1496 QSOs, z > 2'            # label at the top left of the page
+write_page('qso-1496-hiz.html', hiz)
+```
+
+A `PageData` has `fibermap` and `redshifts` (astropy Tables with DESI column names: TARGETID,
+TILEID, FIBER, TARGET_RA, FLUX_G, DESI_TARGET, …, Z, SPECTYPE, ZWARN, …), `extra` (prospect2's
+per-target values), `sources` (input files), and decoded `wave`, `flux`, `noise`, `model` arrays.
+Selecting and stacking are lossless: a stacked page has exactly the data a page made from the same
+spectra would. Edits to the tables are written; reorder only with `p[order]`, never by sorting a table in
+place (that is caught only when it changes the TARGETID order). `stack` refuses pages with different wavelength
+grids or groupings, model vs no model, or the same spectrum twice. The page title (top left) is
+`stack(pages, title=...)`, `p.title = ...`, or `write_page(..., title=...)`; by default a selection
+keeps its page's title, and a stack is named after its single source file, else the output file. Pages hold a data format
+version (`prospect2.pagedata.FORMAT_VERSION`); pages from before format 1.0 must be regenerated. A page
+from a newer prospect2 of the same major version is read, but data this version doesn't know are
+dropped with a warning.
+
+### Combining files
+
+The grouping (header `SPGRP`) decides what identifies a spectrum, which keys the
 VI and the VI export columns. Pass a *list* of Spectra, not one you stacked yourself: stacking keeps
 only the first file's headers (SPGRP, NIGHT, SURVEY, PROGRAM).
 
@@ -95,7 +129,7 @@ encoding; it is the only test of the JS.
 | tier | file(s)                                      | needs                                      |
 |------|----------------------------------------------|--------------------------------------------|
 | 1    | `test_util.py`, `test_encode.py`, `test_models.py` | nothing                              |
-| 2    | `test_page.py`, `test_script.py`             | nothing (synthetic Spectra)                |
+| 2    | `test_page.py`, `test_pagedata.py`, `test_grouping.py`, `test_script.py` | nothing (synthetic Spectra) |
 | 3    | `test_realdata.py`                           | petal 4 of tile 1496, else skipped         |
 | 4    | `test_browser.py` (opt-in)                   | Chrome (`$CHROME`, the macOS app, or `google-chrome`/`chromium` on `$PATH`) |
 
@@ -105,7 +139,8 @@ Checks that need rrdetails or redrock templates (`$RR_TEMPLATE_DIR`) skip withou
 
 ## Architecture
 
-* Python (`prospect2.make_html`, called by `bin/plot_prospect2`) builds a JSON payload;
+* Python (`prospect2.PageData`, used by `make_html` and `bin/plot_prospect2`) builds a versioned
+  JSON payload, embedded as `<script type="application/json" id="prospect2-data">`;
   the HTML template (`py/prospect2/data/prospect2_template.html`) is a small hand-written JS app
   plus inlined uPlot (50 KB, `py/prospect2/data/vendor/`). No Bokeh, no server.
 * Cameras merged with `desispec.coaddition.coadd_cameras`. Per-camera redrock models come from the

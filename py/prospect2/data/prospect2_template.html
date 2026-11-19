@@ -383,9 +383,27 @@ table.mags td { padding: 2px; font-weight: 600; }
 </div>
 
 <script>/*__UPLOT_JS__*/</script>
+<script type="application/json" id="prospect2-data">"__DATA__"</script>
 <script>
 "use strict";
-const D = "__DATA__";   // payload from make_payload(); keys listed in doc/implementation.md "Payload contents"
+// payload from PageData.payload(); keys listed in doc/implementation.md "Payload contents"
+const D = JSON.parse(document.getElementById("prospect2-data").textContent);
+// payload format this viewer was written with (prospect2.pagedata.FORMAT_VERSION).  It displays any
+// page of the same major, tolerating missing minor-added keys and ignoring newer ones
+// (doc/implementation.md "Payload versioning").  Defensive only: render_html writes the viewer and
+// payload together with the same version, so this can't fire for pages prospect2 writes; it guards
+// against a payload pasted into another viewer (or a future viewer that loads outside data).
+const FORMAT_VERSION = "__FORMAT_VERSION__";
+{
+  const v = s => String(s).split(".").map(Number), [d, cur] = [v(D.format_version), v(FORMAT_VERSION)];
+  if (!(d.length === 2 && d.every(Number.isInteger) && d[0] === cur[0])) {
+    document.body.innerHTML = `<div style="margin:3em auto;max-width:40em;font:15px system-ui;line-height:1.5">
+      <h2>Incompatible page data</h2><p>This page holds prospect2 data format ${String(D.format_version).replace(/[<&]/g, "")}, but its viewer
+      displays formats ${cur[0]}.x. Regenerate the page with a matching prospect2.</p></div>`;
+    throw new Error(`prospect2: page data format ${D.format_version} not ${cur[0]}.x`);
+  }
+  if (d[1] > cur[1]) console.warn(`prospect2: page data format ${D.format_version} is newer than this viewer (${FORMAT_VERSION}); newer data not shown`);
+}
 
 /* ================= data decoding ================= */
 async function gunzip(b64) {
@@ -394,10 +412,11 @@ async function gunzip(b64) {
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Response(stream).arrayBuffer();
 }
-// "q2" encoding: see encode() and _esc8() in the Python generator.  Each array is [int8 stream,
-// int32 escape stream]: -128 = take the next escape value; flux -127 = masked.
+// "q2" encoding: see prospect2.encode.  Each D.arrays entry's data is [int8 stream, int32 escape
+// stream] ("esc8" packing): -128 = take the next escape value; flux -127 = masked.
 async function decodeQ2() {
-  const parts = [D.noise, D.flux, D.model, D.amodel].map(p => p ? Promise.all(p.map(gunzip)) : null);
+  const A = D.arrays;
+  const parts = [A.noise, A.flux, A.model, A.amodel].map(p => p ? Promise.all(p.data.map(gunzip)) : null);
   const [[n8, nx], [f8, fx], m, am] = await Promise.all(parts);
   const DL = new Int8Array(n8), DLX = new Int32Array(nx), Q = new Int8Array(f8), QX = new Int32Array(fx);
   const N = D.nspec * NW, flux = new Float32Array(N), noise = new Float32Array(N);
@@ -412,7 +431,7 @@ async function decodeQ2() {
       else { const nz = Math.exp(ln / 100); noise[p] = nz; flux[p] = (q === -128 ? QX[ef++] : q) * nz / 10; }
     }
   }
-  return [flux, noise, m && decodeModel(m, D.mscale), am && decodeModel(am, D.amscale)];
+  return [flux, noise, m && decodeModel(m, A.model.scale), am && decodeModel(am, A.amodel.scale)];
 }
 // model rows: delta-coded integer steps of scale[row]
 function decodeModel([m8, mx], scale) {
@@ -427,22 +446,24 @@ function decodeModel([m8, mx], scale) {
 
 const NW = D.nwave, WAVE = new Float64Array(NW);
 for (let i = 0; i < NW; i++) WAVE[i] = D.wave0 + i * D.dwave;
-const T = D.targets;
-// alternate redrock fits arrive as compact arrays [z, spectype, subtype, Δχ² vs best, zwarn, dup(, model row)];
-// m = row of AMODEL holding this fit's own redrock model, or -1 (not stored)
-for (const t of T) if (t.fits) t.fits = t.fits.map(([z, st, sub, dchi2, zw, dup, m = -1]) => ({ z, st, sub, dchi2, zw, dup, m }));
+// per-target values arrive column by column (D.targets[KEY][i]): UPPERCASE = DESI columns,
+// lowercase = prospect2's own (stored or derived); absent columns are undefined
+const T = Array.from({ length: D.nspec }, (_, i) => { const t = { i }; for (const k in D.targets) t[k] = D.targets[k][i]; return t; });
+// top redrock fits arrive as compact arrays [z, spectype, subtype, Δχ² vs best, zwarn, dup, ...];
+// m = row of AMODEL holding this fit's own redrock model (D.arrays.amodel.owner), or -1 (not stored)
+for (const t of T) if (t.zfits) t.zfits = t.zfits.map(([z, st, sub, dchi2, zw, dup]) => ({ z, st, sub, dchi2, zw, dup, m: -1 }));
+(D.arrays.amodel?.owner || []).forEach(([i, k], r) => { T[i].zfits[k].m = r; });
 // t.key: the spectrum's unique key, which keys the VI.  D.keycols comes from the grouping (SPGRP):
 // TILEID FIBER NIGHT (EXPID) for tile-based pages, SURVEY PROGRAM TARGETID for healpix/uniqpix,
 // ROW (row on this page) if nothing else is unique.
-const KEYF = { TILEID: t => t.tileid, FIBER: t => t.fiber, NIGHT: t => t.night, EXPID: t => t.expid,
-               SURVEY: t => t.survey, PROGRAM: t => t.program, TARGETID: t => t.targetid, ROW: t => t.i };
-for (const t of T) t.key = D.keycols.map(c => KEYF[c](t)).join(":");
+const KEYF = c => c === "ROW" ? (t => t.i) : (t => t[c]);
+for (const t of T) t.key = D.keycols.map(c => KEYF(c)(t)).join(":");
 // other spectra of the same (real) target on this page: other tiles, nights, surveys/programs
 const SAME = new Map();
-for (const t of T) if (!t.targetid.startsWith("-")) SAME.set(t.targetid, [...(SAME.get(t.targetid) || []), t.i]);
-const MULTITILE = new Set(T.map(t => t.tileid)).size > 1;
+for (const t of T) if (!t.TARGETID.startsWith("-")) SAME.set(t.TARGETID, [...(SAME.get(t.TARGETID) || []), t.i]);
+const MULTITILE = new Set(T.map(t => t.TILEID)).size > 1;
 let FLUX, NOISE, MODEL, MHIDE;   // MHIDE[p]=1: data masked AND pipeline model == 0
-let AMODEL, AHIDE;               // the same for alternate-fit models (rows: see t.fits[k].m)
+let AMODEL, AHIDE;               // the same for alternate-fit models (rows: see t.zfits[k].m)
 const row = (arr, i) => arr ? arr.subarray(i * NW, (i + 1) * NW) : null;
 
 /* ================= numerics ================= */
@@ -539,7 +560,7 @@ function yRange(f, m, i0, i1, mode) {
 
 /* ================= state ================= */
 const LS = (() => { try { localStorage.setItem("_p2", "1"); localStorage.removeItem("_p2"); return localStorage; } catch (e) { return null; } })();
-const VIKEY = "prospect2:vi:" + D.source;
+const VIKEY = "prospect2:vi:" + D.vi_key;
 const S = {
   cur: 0, sigma: 0, rest: false, ymode: "robust", view: "inspect",
   show: { flux: true, model: true, noise: true, em: true, abs: true, minor: false, overlap: true },
@@ -547,45 +568,48 @@ const S = {
   lcolor: "ink",             // line-marker palette (LCOLORS)
   lgap: 8,                   // px between plotted data and tick / label
   z: {},                      // per-target working z
-  fit: {},                    // per-target selected redrock fit (index into t.fits; absent = best)
+  fit: {},                    // per-target selected redrock fit (index into t.zfits; absent = best)
   vi: (() => { try { return JSON.parse(LS?.getItem(VIKEY) || "{}"); } catch (e) { return {}; } })(),
   order: T.map((_, i) => i),
 };
 const SMOOTHS = [0, 1, 2, 3, 5, 8];
-const zpipe = i => T[i].z ?? 0;
+const zpipe = i => T[i].Z ?? 0;
 const zcur = i => S.z[i] ?? zpipe(i);
-// Alternate redrock fits (t.fits from rrdetails; [0] = best).  An alternate fit shows its own model
+// Alternate redrock fits (t.zfits from rrdetails; [0] = best).  An alternate fit shows its own model
 // if the generator stored one (f.m >= 0: top --alt-models fits with Δχ² < --alt-max-dchi2, not sky),
 // else the model is hidden.
 const fitOf = i => S.fit[i] ?? 0;
-const altFit = i => fitOf(i) > 0 ? T[i].fits[fitOf(i)] : null;
-const spectypeOf = i => altFit(i)?.st ?? T[i].spectype;
+const altFit = i => fitOf(i) > 0 ? T[i].zfits[fitOf(i)] : null;
+const spectypeOf = i => altFit(i)?.st ?? T[i].SPECTYPE;
 const saveVI = () => { try { LS?.setItem(VIKEY, JSON.stringify(S.vi)); } catch (e) {} };
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const $ = id => document.getElementById(id);
+// AB magnitude of a nanomaggie flux (null unless > 0)
+const mag = f => f > 0 ? 22.5 - 2.5 * Math.log10(f) : null;
 const fmt = (v, d = 2) => v == null || !Number.isFinite(v) ? "—" : v.toFixed(d);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 const ICON_OK = '<svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="6" fill="currentColor"/><path d="M3.3 6.2l1.8 1.8 3.6-3.8" stroke="#fff" stroke-width="1.6" fill="none"/></svg>';
 const ICON_BAD = '<svg viewBox="0 0 12 12"><path d="M6 .5L11.6 11H.4z" fill="currentColor"/><path d="M6 4.3v3.2M6 8.8v.9" stroke="#fff" stroke-width="1.4"/></svg>';
 function zwarnBadge(t) {
-  if (t.zwarn == null) return "";
-  return t.zwarn === 0
+  if (t.ZWARN == null) return "";
+  return t.ZWARN === 0
     ? `<span class="status ok">${ICON_OK}ZWARN 0</span>`
-    : `<span class="status bad" title="${esc(t.zwarn_names.join(", "))}">${ICON_BAD}ZWARN ${t.zwarn}</span>`;
+    : `<span class="status bad" title="${esc(t.zwarn_names.join(", "))}">${ICON_BAD}ZWARN ${t.ZWARN}</span>`;
 }
 // header version: also spell out the bit names (small, muted) below the badge
 function zwarnFact(t) {
-  return zwarnBadge(t) + (t.zwarn ? `<span class="zwnames">${esc(t.zwarn_names.join(", "))}</span>` : "");
+  return zwarnBadge(t) + (t.ZWARN ? `<span class="zwnames">${esc(t.zwarn_names.join(", "))}</span>` : "");
 }
 // SKY = OBJTYPE SKY (incl. stuck positioners on sky, negative TARGETID); blank OBJTYPE + negative TARGETID = unassigned
-const isSky = t => t.objtype === "SKY" || t.targetid.startsWith("-");
-const isUnassigned = t => t.objtype !== "SKY" && t.targetid.startsWith("-");
+const isSky = t => t.OBJTYPE === "SKY" || t.TARGETID.startsWith("-");
+const isUnassigned = t => t.OBJTYPE !== "SKY" && t.TARGETID.startsWith("-");
 const noData = t => t.ngood === 0;                       // every pixel masked in every camera
 // redrock writes placeholders when it has no pixels to fit (NPIXELS=0, CHI2=9e99, DELTACHI2~1e84)
-const noFit = t => t.npixels === 0 || !(t.chi2 < 1e90) || !(t.deltachi2 < 1e30);
-const zval = t => noFit(t) ? null : t.z, dchi2val = t => noFit(t) ? null : t.deltachi2;
-const label = t => (noData(t) ? ["NO DATA"] : []).concat(t.objtype === "SKY" ? ["SKY"] : isUnassigned(t) ? ["UNASSIGNED"] : (t.primary.length ? t.primary.filter(n => !n.startsWith("ELG_") || !t.primary.includes("ELG")).slice(0, 3) : t.classes.slice(0, 2)));
+// (no zcat: no Z at all; a missing CHI2/DELTACHI2/NPIXELS column is unknown, not "no fit")
+const noFit = t => t.Z == null || t.NPIXELS === 0 || (t.CHI2 != null && !(t.CHI2 < 1e90)) || (t.DELTACHI2 != null && !(t.DELTACHI2 < 1e30));
+const zval = t => noFit(t) ? null : t.Z, dchi2val = t => noFit(t) ? null : t.DELTACHI2;
+const label = t => (noData(t) ? ["NO DATA"] : []).concat(t.OBJTYPE === "SKY" ? ["SKY"] : isUnassigned(t) ? ["UNASSIGNED"] : (t.primary.length ? t.primary.filter(n => !n.startsWith("ELG_") || !t.primary.includes("ELG")).slice(0, 3) : t.classes.slice(0, 2)));
 const badges = (t, n = 3) => label(t).slice(0, n).map(b => `<span class="badge${b === "NO DATA" ? " nodata" : ""}">${esc(b)}</span>`).join("");
 const medSNR = t => { const v = Object.values(t.snr).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b) / v.length : 0; };
 
@@ -613,16 +637,16 @@ function parseIdList(tok) {
 //   ELG  nodata  ...      (case-insensitive substring of the target's labels)
 //   !term                 (negation of any of the above)
 // Terms that look like comparisons but don't parse are returned in `bad` and ignored.
-const FIELDS = { z: zval, dchi2: dchi2val, fiber: t => t.fiber, tile: t => t.tileid, night: t => t.night, snr: medSNR, zwarn: t => t.zwarn };
+const FIELDS = { z: zval, dchi2: dchi2val, fiber: t => t.FIBER, tile: t => t.TILEID, night: t => t.NIGHT, snr: medSNR, zwarn: t => t.ZWARN };
 const CMP = { "<": (a, b) => a < b, ">": (a, b) => a > b, "<=": (a, b) => a <= b, ">=": (a, b) => a >= b, "=": (a, b) => a == b };
 const isNum = s => s !== "" && isFinite(+s);
 function compileTerm(tok) {
   if (tok.startsWith("!")) { const f = tok.length > 1 && compileTerm(tok.slice(1)); return f && (t => !f(t)); }
   const ids = parseIdList(tok);
   if (ids && (ids.list || ids.tids.size || ids.fibers.length)) return t =>
-    ids.tids.has(t.targetid) || (t.fiber != null && ids.fibers.some(([a, b]) => t.fiber >= a && t.fiber <= b)) ||
+    ids.tids.has(t.TARGETID) || (t.FIBER != null && ids.fibers.some(([a, b]) => t.FIBER >= a && t.FIBER <= b)) ||
     // a single long number that is not an exact TARGETID still works as a partial TARGETID search
-    (!ids.list && ids.tids.size === 1 && !ids.fibers.length && t.targetid.includes(tok));
+    (!ids.list && ids.tids.size === 1 && !ids.fibers.length && t.TARGETID.includes(tok));
   if (/[<>=]/.test(tok)) {
     const p = tok.split(/(<=|>=|<|>|=)/);           // [a, op, b] or [a, op, b, op, c]
     if (p.length === 3) {                            // field op num, or num op field
@@ -636,7 +660,7 @@ function compileTerm(tok) {
     return null;
   }
   const up = tok.toUpperCase();
-  return t => [noData(t) ? "NODATA" : "", isUnassigned(t) ? "UNASSIGNED" : "", t.targetid, t.fiber, t.spectype, t.subtype, t.objtype, t.morph, t.survey, t.program, ...t.classes].join(" ").toUpperCase().includes(up);
+  return t => [noData(t) ? "NODATA" : "", isUnassigned(t) ? "UNASSIGNED" : "", t.TARGETID, t.FIBER, t.SPECTYPE, t.SUBTYPE, t.OBJTYPE, t.MORPHTYPE, t.SURVEY, t.PROGRAM, ...t.classes].join(" ").toUpperCase().includes(up);
 }
 function compileQuery(q) {
   const preds = [], bad = [];
@@ -651,10 +675,10 @@ function rebuildOrder() {
   $("qerr").textContent = bad.length ? `Ignored (can't parse): ${bad.join("  ")}` : "";
   let o = T.map((_, i) => i).filter(i => {
     const t = T[i];
-    return match(t) && (!zw || t.zwarn) && (!ns || !isSky(t)) && (!nv || !S.vi[t.key]);
+    return match(t) && (!zw || t.ZWARN) && (!ns || !isSky(t)) && (!nv || !S.vi[t.key]);
   });
   const key = $("sort").value;
-  const kf = { i: i => i, fiber: i => (T[i].tileid ?? 0) * MAXFIBER + (T[i].fiber ?? -1), z: i => zval(T[i]) ?? -1, dchi2: i => dchi2val(T[i]) ?? -1, snr: i => medSNR(T[i]) }[key];
+  const kf = { i: i => i, fiber: i => (T[i].TILEID ?? 0) * MAXFIBER + (T[i].FIBER ?? -1), z: i => zval(T[i]) ?? -1, dchi2: i => dchi2val(T[i]) ?? -1, snr: i => medSNR(T[i]) }[key];
   o.sort((a, b) => kf(a) - kf(b));
   S.order = o;
   renderList(); if (S.view === "grid") renderGallery();
@@ -666,9 +690,9 @@ function renderList() {
     const t = T[i], v = S.vi[t.key];
     return `<div class="item${i === S.cur ? " sel" : ""}" data-i="${i}" role="option" aria-selected="${i === S.cur}">
       <div class="a num">${shortLabel(t)} ${badges(t, 2)}</div>
-      <div class="z num">${noFit(t) ? "" : `z ${fmt(t.z, 4)}`}</div>
-      <div class="b">${noFit(t) ? "no redrock fit" : `${esc(t.spectype ?? "")}${t.subtype ? " " + esc(t.subtype) : ""} · ΔΧ² ${fmt(t.deltachi2, 0)}`}</div>
-      <div class="meta">${t.zwarn ? `<span class="status bad">${ICON_BAD}</span>` : ""}${v ? `<span class="vi-dot q${v.q}">${v.q}</span>` : ""}</div>
+      <div class="z num">${noFit(t) ? "" : `z ${fmt(t.Z, 4)}`}</div>
+      <div class="b">${noFit(t) ? "no redrock fit" : `${esc(t.SPECTYPE ?? "")}${t.SUBTYPE ? " " + esc(t.SUBTYPE) : ""} · ΔΧ² ${fmt(t.DELTACHI2, 0)}`}</div>
+      <div class="meta">${t.ZWARN ? `<span class="status bad">${ICON_BAD}</span>` : ""}${v ? `<span class="vi-dot q${v.q}">${v.q}</span>` : ""}</div>
     </div>`;
   }).join("") || '<div class="empty" style="padding:10px">No targets match.</div>';
   $("count").textContent = `${S.order.length} of ${T.length} shown`;
@@ -1074,30 +1098,30 @@ function renderPanels() {
 // Where a spectrum comes from: ["main/dark", "tile 1496", "night 20240214", "exp 123"], the parts
 // known for it; with `ref`, only the parts that differ from spectrum `ref` (for "also on ..." links).
 function whereParts(t, ref) {
-  const parts = [[t.survey ? `${t.survey}/${t.program || "?"}` : "", r => r.survey + r.program],
-    [t.tileid != null ? `tile ${t.tileid}` : "", r => r.tileid], [t.night != null ? `night ${t.night}` : "", r => r.night],
-    [t.expid != null ? `exp ${t.expid}` : "", r => r.expid]];
+  const parts = [[t.SURVEY ? `${t.SURVEY}/${t.PROGRAM || "?"}` : "", r => r.SURVEY + r.PROGRAM],
+    [t.TILEID != null ? `tile ${t.TILEID}` : "", r => r.TILEID], [t.NIGHT != null ? `night ${t.NIGHT}` : "", r => r.NIGHT],
+    [t.EXPID != null ? `exp ${t.EXPID}` : "", r => r.EXPID]];
   return parts.filter(([s, f]) => s && (!ref || f(t) !== f(ref))).map(([s]) => s);
 }
 // list / grid label: fiber (tile:fiber on multi-tile pages), else #row
-const shortLabel = t => t.fiber == null ? "#" + t.i : MULTITILE ? `${t.tileid}:${t.fiber}` : `${t.fiber}`;
+const shortLabel = t => t.FIBER == null ? "#" + t.i : MULTITILE ? `${t.TILEID}:${t.FIBER}` : `${t.FIBER}`;
 
 function renderInfo() {
   const i = S.cur, t = T[i], zz = zcur(i);
-  $("t-title").textContent = t.fiber == null ? `Target ${t.targetid}` : t.objtype === "SKY" ? `Sky fiber ${t.fiber}` : isUnassigned(t) ? `Unassigned fiber ${t.fiber}` : `Fiber ${t.fiber}`;
-  const also = (SAME.get(t.targetid) || []).filter(j => j !== i);
-  $("t-sub").innerHTML = [t.fiber == null ? "" : `<span class="mono">${t.targetid}</span>`, ...whereParts(t).map(esc),
+  $("t-title").textContent = t.FIBER == null ? `Target ${t.TARGETID}` : t.OBJTYPE === "SKY" ? `Sky fiber ${t.FIBER}` : isUnassigned(t) ? `Unassigned fiber ${t.FIBER}` : `Fiber ${t.FIBER}`;
+  const also = (SAME.get(t.TARGETID) || []).filter(j => j !== i);
+  $("t-sub").innerHTML = [t.FIBER == null ? "" : `<span class="mono">${t.TARGETID}</span>`, ...whereParts(t).map(esc),
     also.length ? `also ${also.map(j => `<a href="#" data-goto="${j}" title="same TARGETID">${esc(whereParts(T[j], t).join(" ") || "#" + j)}</a>`).join(", ")}` : ""]
     .filter(Boolean).join(" · ");
   $("t-sub").querySelectorAll("[data-goto]").forEach(a => a.onclick = e => { e.preventDefault(); select(+a.dataset.goto); });
   $("t-badges").innerHTML = badges(t, 9);
   const snr = Object.entries(t.snr).map(([b, v]) => `${b} ${fmt(v, 1)}`).join(" · ");
   $("facts").innerHTML = [
-    ["Redrock", noFit(t) ? `<span style="color:var(--muted)" title="redrock had no unmasked pixels to fit; its Z/SPECTYPE/ΔΧ² are placeholders">no fit</span>` : t.spectype ? `${esc(t.spectype)}${t.subtype ? " " + esc(t.subtype) : ""}` : "—"],
-    ["z", noFit(t) ? "—" : `<span class="num">${fmt(t.z, 5)}</span> <span style="color:var(--muted);font-weight:400" class="num">± ${fmt(t.zerr, 5)}</span>`],
-    ["ΔΧ²", noFit(t) ? "—" : `<span class="num" title="Χ² / Npix = ${t.chi2 >= 1e6 ? t.chi2.toExponential(1) : fmt(t.chi2, 0)} / ${t.npixels ?? "—"}">${fmt(t.deltachi2, 1)}</span>`],
+    ["Redrock", noFit(t) ? `<span style="color:var(--muted)" title="redrock had no unmasked pixels to fit; its Z/SPECTYPE/ΔΧ² are placeholders">no fit</span>` : t.SPECTYPE ? `${esc(t.SPECTYPE)}${t.SUBTYPE ? " " + esc(t.SUBTYPE) : ""}` : "—"],
+    ["z", noFit(t) ? "—" : `<span class="num">${fmt(t.Z, 5)}</span> <span style="color:var(--muted);font-weight:400" class="num">± ${fmt(t.ZERR, 5)}</span>`],
+    ["ΔΧ²", noFit(t) ? "—" : `<span class="num" title="Χ² / Npix = ${t.CHI2 >= 1e6 ? t.CHI2.toExponential(1) : fmt(t.CHI2, 0)} / ${t.NPIXELS ?? "—"}">${fmt(t.DELTACHI2, 1)}</span>`],
     ["Quality", zwarnFact(t)],
-    ...(t.fits && !noFit(t) ? [["Redrock fit", `<span class="fitstep"><button class="iconbtn" data-fit="-1" title="previous fit (&lt;)">‹</button><span class="num">${fitOf(i) + 1} / ${t.fits.length}</span><button class="iconbtn" data-fit="1" title="next fit (&gt;)">›</button></span>`]] : []),
+    ...(t.zfits && !noFit(t) ? [["Redrock fit", `<span class="fitstep"><button class="iconbtn" data-fit="-1" title="previous fit (&lt;)">‹</button><span class="num">${fitOf(i) + 1} / ${t.zfits.length}</span><button class="iconbtn" data-fit="1" title="next fit (&gt;)">›</button></span>`]] : []),
     ["Median S/N per pixel", `<span class="num" style="font-weight:500">${snr}</span>`],
     ["Exposure", `<span class="num">${t.exptime == null ? "—" : fmt(t.exptime, 0) + " s"}</span> <span style="color:var(--muted);font-weight:400">(${t.numexp} exp)</span>`],
   ].map(([k, v]) => `<div class="fact"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
@@ -1108,14 +1132,14 @@ function renderInfo() {
   $("zin").classList.toggle("changed", zz !== zpipe(i));
   const af = altFit(i), dv = (a, b) => ((a - b) / (1 + b) * 299792.458).toFixed(0);
   $("zinfo").textContent = af
-    ? `fit #${fitOf(i) + 1} of ${t.fits.length}: ${af.st}${af.sub ? " " + af.sub : ""} z = ${af.z.toFixed(5)}, Δχ² = +${fmt(af.dchi2, 1)} vs best`
+    ? `fit #${fitOf(i) + 1} of ${t.zfits.length}: ${af.st}${af.sub ? " " + af.sub : ""} z = ${af.z.toFixed(5)}, Δχ² = +${fmt(af.dchi2, 1)} vs best`
       + (Math.abs(zz - af.z) > 5e-7 ? ` · trial z = ${zz.toFixed(5)} (Δv = ${dv(zz, af.z)} km/s vs this fit)` : "")
       + (af.m >= 0 ? "" : !D.alt_models ? " · model hidden: only the best-fit model is stored"
-         : ` · no model stored (${fitOf(i) > D.alt_models.n ? `only for fits 2–${D.alt_models.n + 1}` : `Δχ² ≥ ${D.alt_models.max_dchi2}`})`)
+         : ` · no model stored (${fitOf(i) > D.alt_models.n ? `only for fits 2–${D.alt_models.n + 1}` : `Δχ² ≥ ${D.alt_models.max_dchi2 ?? "∞"}`})`)
     : zz !== zpipe(i) ? `trial z = ${zz.toFixed(5)}  (Δv = ${dv(zz, zpipe(i))} km/s vs pipeline)` : "";
 
   // right column
-  const ra = t.ra, dec = t.dec, img = $("cut"), hasRD = ra != null && dec != null;
+  const ra = t.TARGET_RA, dec = t.TARGET_DEC, img = $("cut"), hasRD = ra != null && dec != null;
   $("radec").textContent = hasRD ? `${ra.toFixed(5)}, ${dec >= 0 ? "+" : ""}${dec.toFixed(5)}` : "no coordinates";
   $("lsv").hidden = !hasRD;
   img.closest(".cutout").hidden = !hasRD; img.hidden = !hasRD; $("cutmsg").hidden = true;
@@ -1126,20 +1150,21 @@ function renderInfo() {
   } else img.removeAttribute("src");
 
   const bands = ["g", "r", "z", "w1", "w2"];
-  $("mags").innerHTML = `<tr>${bands.map(b => `<th>${b.toUpperCase()}</th>`).join("")}<th>fib r</th></tr><tr>${bands.map(b => `<td>${fmt(t.mag[b])}</td>`).join("")}<td>${fmt(t.fibermag_r)}</td></tr>`;
+  $("mags").innerHTML = `<tr>${bands.map(b => `<th>${b.toUpperCase()}</th>`).join("")}<th>fib r</th></tr><tr>${bands.map(b => `<td>${fmt(mag(t["FLUX_" + b.toUpperCase()]))}</td>`).join("")}<td>${fmt(mag(t.FIBERFLUX_R))}</td></tr>`;
   const kv = rows => rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
-  $("fitsect").hidden = !(t.fits && !noFit(t));
+  $("fitsect").hidden = !(t.zfits && !noFit(t));
   if (!$("fitsect").hidden) {
-    $("fits").innerHTML = `<tr><th>#</th><th>Type</th><th>z</th><th title="χ² minus the best fit's χ²">Δχ² vs best</th></tr>` + t.fits.map((f, k) =>
+    $("fits").innerHTML = `<tr><th>#</th><th>Type</th><th>z</th><th title="χ² minus the best fit's χ²">Δχ² vs best</th></tr>` + t.zfits.map((f, k) =>
       `<tr data-k="${k}" class="${k === fitOf(i) ? "sel" : ""}${f.dup >= 0 ? " dup" : ""}" title="${f.dup >= 0 ? `within 1000 km/s of fit #${f.dup + 1}` : ""}${f.zw ? `${f.dup >= 0 ? "; " : ""}ZWARN ${f.zw}` : ""}">
         <td>${k + 1}</td><td>${esc(f.st)}${f.sub ? ` <small>${esc(f.sub)}</small>` : ""}</td>
         <td class="num">${f.z.toFixed(5)}${f.dup >= 0 ? ` <small>≈#${f.dup + 1}</small>` : ""}</td><td class="num">${k ? "+" + fmt(f.dchi2, 1) : "best"}</td></tr>`).join("");
     $("fits").querySelectorAll("tr[data-k]").forEach(r => r.onclick = () => selectFit(+r.dataset.k));
   }
   $("tgt").innerHTML = kv([
-    ["TARGETID", `<span class="mono">${t.targetid}</span>`], ["OBJTYPE / MORPH", `${esc(t.objtype || "—")} / ${esc(t.morph || "—")}`],
+    ["TARGETID", `<span class="mono">${t.TARGETID}</span>`], ["OBJTYPE / MORPH", `${esc(t.OBJTYPE || "—")} / ${esc(t.MORPHTYPE || "—")}`],
     ["Target bits", esc(t.classes.join(", ") || "—")], ["FIBERSTATUS", t.fiberstatus ? `${t.fiberstatus}: ${esc(t.fiberstatus_names.join(", "))}` : "0"],
-    ["E(B−V)", fmt(t.ebv, 3)],
+    ["E(B−V)", fmt(t.EBV, 3)],
+    ...(D.sources.length > 1 ? [["Source", `<span class="mono">${esc(D.sources[t.src]?.source ?? "?")}</span>`]] : []),
   ]);
   renderVI();
 }
@@ -1167,9 +1192,9 @@ $("viexport").onclick = () => {
   const ids = ["TARGETID", "SURVEY", "PROGRAM", ...D.keycols.filter(c => !["TARGETID", "SURVEY", "PROGRAM", "ROW"].includes(c))];
   const head = [...ids, "VI_QUALITY,VI_SPECTYPE,VI_Z,VI_COMMENT,RR_SPECTYPE,RR_Z,RR_ZWARN,RR_DELTACHI2,TIMESTAMP"].join(",");
   const rows = T.filter(t => S.vi[t.key]).map(t => { const v = S.vi[t.key];
-    return [...ids.map(c => KEYF[c](t) ?? ""), v.q ?? "", v.spectype || "", v.z?.toFixed(6), `"${(v.comment || "").replace(/"/g, '""')}"`, t.spectype, t.z?.toFixed(6), t.zwarn, t.deltachi2, v.ts].join(","); });
+    return [...ids.map(c => KEYF(c)(t) ?? ""), v.q ?? "", v.spectype || "", v.z?.toFixed(6), `"${(v.comment || "").replace(/"/g, '""')}"`, t.SPECTYPE, t.Z?.toFixed(6), t.ZWARN, t.DELTACHI2, v.ts].join(","); });
   const blob = new Blob([[head, ...rows].join("\n") + "\n"], { type: "text/csv" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `vi_${D.source.replace(/\.fits.*$/, "")}.csv`; a.click();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `vi_${D.vi_key.replace(/\.fits.*$/, "").replace(/[:/\\]/g, "_")}.csv`; a.click();
 };
 
 /* ================= gallery ================= */
@@ -1180,7 +1205,7 @@ function renderGallery() {
     return `<div class="card gcard${i === S.cur ? " sel" : ""}" data-i="${i}">
       <div class="gh"><span class="num"><b>${shortLabel(t)}</b> ${badges(t)}</span>${zwarnBadge(t)}</div>
       <canvas></canvas>
-      <div class="gf num"><span>${noFit(t) ? "no redrock fit" : `${esc(t.spectype ?? "")} z=${fmt(t.z, 4)}`}</span><span>${noFit(t) ? "" : `ΔΧ² ${fmt(t.deltachi2, 0)}`}${v ? ` <span class="vi-dot q${v.q}">${v.q}</span>` : ""}</span></div></div>`; }).join("");
+      <div class="gf num"><span>${noFit(t) ? "no redrock fit" : `${esc(t.SPECTYPE ?? "")} z=${fmt(t.Z, 4)}`}</span><span>${noFit(t) ? "" : `ΔΧ² ${fmt(t.DELTACHI2, 0)}`}${v ? ` <span class="vi-dot q${v.q}">${v.q}</span>` : ""}</span></div></div>`; }).join("");
   const cards = [...$("cards").querySelectorAll(".gcard")];
   const io = new IntersectionObserver(ents => ents.forEach(en => {
     if (!en.isIntersecting) return; io.unobserve(en.target);
@@ -1229,9 +1254,9 @@ function setZ(z, fit = 0) {           // fit: selected redrock fit index (0 = be
 }
 const nudge = n => setZ(+(zcur(S.cur) + n * 0.0005 * (1 + zcur(S.cur))).toFixed(6), fitOf(S.cur));   // stays on the selected fit
 function selectFit(k) {
-  const t = T[S.cur]; if (!t.fits || noFit(t)) return;
-  k = (k + t.fits.length) % t.fits.length;
-  setZ(k ? t.fits[k].z : zpipe(S.cur), k);
+  const t = T[S.cur]; if (!t.zfits || noFit(t)) return;
+  k = (k + t.zfits.length) % t.zfits.length;
+  setZ(k ? t.zfits[k].z : zpipe(S.cur), k);
 }
 const stepFit = d => selectFit(fitOf(S.cur) + d);
 document.querySelectorAll("[data-dz]").forEach(b => b.onclick = () => nudge(+b.dataset.dz));
@@ -1323,17 +1348,20 @@ document.addEventListener("keydown", e => {
 (async () => {
   $("srcname").textContent = D.title;
   // input files: hover on the page name, and in the help overlay (no screen space otherwise)
-  const prov = [["source", D.source], ["redrock", D.redrock], ["model", D.model_source],
-                ["alternate fits", D.rrdetails]].filter(([, v]) => v);
-  $("srcname").title = prov.filter(([k, v]) => k !== "source" || v !== D.title).map(([k, v]) => `${k}: ${v}`).join("\n");
+  const one = s => [["source", s.source], ["redrock", s.redrock], ["model", s.model_source], ["alternate fits", s.rrdetails]];
+  const prov = D.sources.length === 1
+    ? one({ ...D.sources[0], source: D.sources[0].source ?? D.title }).filter(([, v]) => v)
+    : D.sources.flatMap((s, j) => one(s).filter(([, v]) => v).map(([k, v]) => [`${k} ${j + 1}`, v]));
+  $("srcname").title = D.sources.length === 1
+    ? prov.filter(([k, v]) => k !== "source" || v !== D.title).map(([k, v]) => `${k}: ${v}`).join("\n")
+    : `${D.sources.length} sources:\n` + D.sources.map(s => s.source ?? "?").join("\n");
   $("provtab").innerHTML = prov.map(([k, v]) => `<tr><td>${k}</td><td class="mono">${esc(v)}</td></tr>`).join("");
   $("provenance").hidden = !prov.length;
   [FLUX, NOISE, MODEL, AMODEL] = await decodeQ2();
   if (MODEL) MHIDE = fillMaskedModel(MODEL, FLUX);
   if (AMODEL) {
-    const spec = new Int32Array(AMODEL.length / NW);
-    T.forEach((t, i) => t.fits?.forEach(f => { if (f.m >= 0) spec[f.m] = i; }));
-    AHIDE = fillMaskedModel(AMODEL, FLUX, r => spec[r]);
+    const owner = D.arrays.amodel.owner;
+    AHIDE = fillMaskedModel(AMODEL, FLUX, r => owner[r][0]);
   }
   T.forEach((t, i) => { let n = 0; const f = row(FLUX, i); for (let k = 0; k < NW; k++) if (f[k] === f[k]) n++; t.ngood = n; });
   const hp = new URLSearchParams(location.hash.slice(1));

@@ -74,20 +74,20 @@ def merge_camera_models(sp, models, wave):
     return np.where(den > 0, num / np.where(den > 0, den, 1), msum / np.maximum(cnt, 1))
 
 
-def alt_fit_models(sp, wave, zcat, fits, fitlists, nalt=2, max_dchi2=100):
+def alt_fit_models(sp, wave, zcat, zfits, fitlists, nalt=2, max_dchi2=100):
     """
     Redrock models for alternate fits, computed from the rrdetails templates + coeff, convolved with
     each camera's resolution and merged like the best-fit model.  Only fits ranked 2..nalt+1 with
     chi2 - best chi2 < max_dchi2 get a model; sky and unassigned fibers (OBJTYPE != TGT, or
     TARGETID < 0 if there is no OBJTYPE column) never do.
-    `fits` is the per-spectrum list of raw rrdetails records (see prospect2.io.read_rrdetails) and
-    `fitlists` the matching display lists; appends the model's row index to each such fit's entry
-    in `fitlists` (in place).
-    Returns (models [nrow, nwave], spectrum index of each row), or (None, None) if there are none.
+    `zfits` is the per-spectrum list of raw rrdetails records (see prospect2.io.read_rrdetails) and
+    `fitlists` the matching display lists (None = no fits shown, e.g. sky).
+    Returns (models [nrow, nwave], owner [nrow, 2] = (spectrum index, fit index) of each row),
+    or (None, None) if there are none.
     """
     from desispec.interpolation import resample_flux
     rows = []
-    for i, d in enumerate(fits):
+    for i, d in enumerate(zfits):
         if d is None or fitlists[i] is None:
             continue
         objtype = fibermap_value(sp.fibermap, i, 'OBJTYPE')
@@ -95,19 +95,18 @@ def alt_fit_models(sp, wave, zcat, fits, fitlists, nalt=2, max_dchi2=100):
             continue
         for k in range(1, min(nalt + 1, len(d))):
             if d['chi2'][k] - d['chi2'][0] < max_dchi2:
-                fitlists[i][k].append(len(rows))
-                rows.append((i, d[k]))
+                rows.append((i, k, d[k]))
     if not rows:
         return None, None
     hdr = zcat.meta if 'TEMNAM00' in zcat.meta else None
     templates = load_redrock_templates(zcat_header=hdr)
-    idx = np.array([i for i, _ in rows])
+    idx = np.array([i for i, _, _ in rows])
     sub = sp[idx]
     cam = {b: np.zeros(sub.flux[b].shape) for b in sp.bands}
     s = lambda x: (x.decode() if isinstance(x, bytes) else str(x)).strip()
-    for j, (i, d) in enumerate(rows):
+    for j, (i, _, d) in enumerate(rows):
         tx = templates[(s(d['spectype']), s(d['subtype']).strip('-'))]
         rest = tx.flux.T.dot(d['coeff'][:tx.nbasis]).T
         for b in sp.bands:
             cam[b][j] = sub.R[b][j].dot(resample_flux(sp.wave[b], tx.wave * (1 + d['z']), rest))
-    return merge_camera_models(sub, cam, wave), idx
+    return merge_camera_models(sub, cam, wave), np.array([[i, k] for i, k, _ in rows], dtype=np.int64)
