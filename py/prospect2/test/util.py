@@ -127,11 +127,12 @@ def decode_q2(payload):
     """
     Python mirror of decodeQ2() in the viewer: returns (flux, noise, model,
     amodel) as float arrays [nspec or nrow, nwave], NaN where masked, None for
-    absent models.
+    absent models.  Deliberately independent of prospect2.encode.
     """
     nspec, nw = payload['nspec'], payload['nwave']
-    dln, _ = _unesc8(payload['noise'])
-    q, masked = _unesc8(payload['flux'], masked_flag=True)
+    arrays = payload['arrays']
+    dln, _ = _unesc8(arrays['noise']['data'])
+    q, masked = _unesc8(arrays['flux']['data'], masked_flag=True)
     ln = np.cumsum(dln.reshape(nspec, nw), axis=1)
     noise = np.exp(ln / 100)
     flux = q.reshape(nspec, nw) * noise / 10
@@ -139,17 +140,48 @@ def decode_q2(payload):
     flux[masked] = np.nan
     noise[masked] = np.nan
 
-    def model(packed, scale):
-        if packed is None:
+    def model(a):
+        if a is None:
             return None
-        dm, _ = _unesc8(packed)
-        return np.cumsum(dm.reshape(len(scale), nw), axis=1) * np.asarray(scale)[:, None]
+        dm, _ = _unesc8(a['data'])
+        return np.cumsum(dm.reshape(len(a['scale']), nw), axis=1) * np.asarray(a['scale'])[:, None]
 
-    return flux, noise, model(payload['model'], payload['mscale']), model(payload.get('amodel'), payload.get('amscale'))
+    return flux, noise, model(arrays.get('model')), model(arrays.get('amodel'))
 
 
 def payload_from_html(html):
     """The JSON payload embedded in a generated page"""
-    start = html.index('const D = ') + len('const D = ')
-    payload, _ = json.JSONDecoder().raw_decode(html, start)
+    tag = '<script type="application/json" id="prospect2-data">'
+    payload, _ = json.JSONDecoder().raw_decode(html, html.index(tag) + len(tag))
     return payload
+
+
+def target_rows(payload):
+    """The payload's column-oriented targets as a list of per-target dicts"""
+    cols = payload['targets']
+    return [{k: v[i] for k, v in cols.items()} for i in range(payload['nspec'])]
+
+
+def synthetic_page(nspec=4, seed=1, source='coadd-x.fits', owner=((0, 1), (2, 1), (2, 2)), **kwargs):
+    """
+    PageData from synthetic_spectra with a zcat, models, top fits (3 per
+    target, none for the last spectrum), and alternate-fit models for the fits
+    in `owner` ((spectrum, fit) pairs; ramps of different slopes, so rows are
+    distinguishable).  Built by hand: real alternate-fit models need redrock
+    templates.  kwargs go to synthetic_spectra's fibermap (column=values).
+    """
+    from prospect2.pagedata import PageData
+    from prospect2.encode import quantize_model, ARRAY_INFO
+    sp = synthetic_spectra(nspec=nspec, seed=seed)
+    for k, v in kwargs.items():
+        sp.fibermap[k] = v
+    zfits = [synthetic_fits([0.5, 1.2, 2.0], [100.0, 110.0, 150.0]) for _ in range(nspec - 1)] + [None]
+    p = PageData.from_spectra(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp), zfits=zfits,
+                              provenance=dict(source=source), alt_models=0)
+    if owner:
+        owner = np.array(owner, dtype=np.int64)
+        ramp = np.linspace(0, 1, p.nwave)
+        model = np.array([(1 + 10 * i + k) * ramp for i, k in owner])
+        p.arrays['amodel'] = dict(ARRAY_INFO['amodel'], **quantize_model(model, p.noise[owner[:, 0]], 30), owner=owner)
+        p.alt_models = dict(n=2, max_dchi2=100)
+    return p

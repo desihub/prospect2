@@ -7,9 +7,10 @@ specific fiber that exposed a problem).
 ## Architecture
 
 **Python builds a data payload; a static hand-written JS app renders it.** The generator
-(`bin/plot_prospect2` → `prospect2.make_html`) reads the coadd/redrock files and
-writes one self-contained HTML file: `prospect2_template.html` with uPlot 1.6.31 (`vendor/`,
-~50 KB) and the payload inlined.
+(`bin/plot_prospect2` → `PageData.from_spectra` → `io.write_page`; `prospect2.make_html` is the
+same path) reads the coadd/redrock files and writes one self-contained HTML file:
+`prospect2_template.html` with uPlot 1.6.31 (`vendor/`, ~50 KB) and the payload inlined. Pages
+can be read back, filtered and stacked without the FITS files (`PageData`, below).
 
 **Package layout follows desispec** (user decision, 2026-11-14): `bin/` wrappers without `.py`
 that call `prospect2.scripts.X.parse()` / `main(args)`; library code in `py/prospect2/`; files the
@@ -35,32 +36,37 @@ optionally desitarget. License: BSD 3-clause, same authors as prospect.
 decision 2026-11-14 to add it before sharing):
 - `bin/` scripts are installed with `script-files`, not `console_scripts` entry points, so the
   same `bin/` wrappers work installed and in place (DESI convention).
-- Version is `__version__` in `py/prospect2/__init__.py`, read statically by setuptools (no import,
-  so building doesn't need desispec).
+- Version is `__version__` in `py/prospect2/_version.py` (only that line, desiutil convention: its
+  tools rewrite the file), read statically by setuptools (no import, so building doesn't need
+  desispec). The payload format version is separate (`pagedata.FORMAT_VERSION`).
 - Dependencies: numpy, astropy, h5py (rrdetails), desiutil, desispec, redrock (all on PyPI).
   desitarget is optional (`[all]`): without it the page just lacks target-bit names.
 - `MANIFEST.in` prunes `scratch/` (hundreds of MB of local test data) from sdists.
 
 ## Python API
 
-**`prospect2.make_html(spectra, zcat=None, models=None, fits=None, ...)` is the entry point**
-(`page.py`); the script only parses arguments, reads files and calls it. Goal (user, 2026-11-14):
+**`prospect2.make_html(spectra, zcat=None, models=None, zfits=None, ...)` is the entry point**
+(`page.py`); it is `PageData.from_spectra(...).to_html()`, and the script does the same via
+`io.write_page`. Goal (user, 2026-11-14):
 users can read several coadds, filter and combine them, and make one page without temporary files.
 User decisions:
-- *Row-matched inputs:* `zcat`, `models` (`{band: [nspec, nwave_band]}`) and `fits` must match the
+- *Row-matched inputs:* `zcat`, `models` (`{band: [nspec, nwave_band]}`) and `zfits` must match the
   spectra row for row (desispec convention, nothing silently reordered); TARGETIDs and shapes are
   checked, with a ValueError.
 - *Spectra from `read_spectra(..., return_models=True, return_redshifts=True)` work as is:*
   `zcat`/`models` default to `spectra.redshifts`/`spectra.model`. Explicit arguments override them
   (logged).
-- *A list of Spectra is accepted* (and lists of `zcat`/`models`/`fits` to match). `desispec.spectra.stack`
+- *A list of Spectra is accepted* (and lists of `zcat`/`models`/`zfits` to match). `desispec.spectra.stack`
   keeps only the first input's `redshifts.meta`, so the TEMNAMnn/TEMVERnn template versions are
   compared *before* stacking, and differences raise (supporting mixed versions would need
   per-spectrum template bookkeeping; maybe later). A single pre-stacked Spectra is also accepted;
   then template consistency is the caller's responsibility.
 - *`read_rrdetails` returns raw records*, one entry per zcat row (None where missing or not
   matching zcat), so lists from several files concatenate and filter like the zcats; the display
-  lists, ≈-duplicate marks and sky exclusion are computed in `make_payload`.
+  lists, ≈-duplicate marks and sky exclusion are computed in `PageData.from_spectra`.
+- *`zfits`, not `fits`* (user, 2026-11-17): the top redrock fits per target, best first. `fits`
+  shadowed `astropy.io.fits` (imported as `fits` in `io.py`); `altfits` was rejected because entry 0
+  is the best fit. The stored per-target display list has the same name.
 - `make_payload` (dict) and `render_html` (str) are separate, so the payload can be tested without
   parsing HTML.
 - *Only what's needed to plot is required* (user, 2026-11-15): wave/flux/ivar and a fibermap
@@ -103,22 +109,26 @@ Four tiers in `py/prospect2/test/` (user-approved design, 2026-11-14):
 1. *Unit tests* (no data): fiber lists, selection, output naming, q2 round trips, camera-model
    merging.
 2. *Synthetic Spectra* (`desispec.test.util.get_blank_spectra` + the fibermap columns the page
-   reads): `make_payload`/`make_html` behavior and errors, `parse()`. Models are passed in and
-   alternate-fit models are off, so no redrock templates are needed.
+   reads): `make_payload`/`make_html` behavior and errors, `parse()`, `PageData` selection,
+   stacking, round trips and refusals, and the payload key-set guard. Models are passed in and
+   alternate-fit models are built by hand (`test/util.py` `synthetic_page`), so no redrock
+   templates are needed.
 3. *Real data* for specific fibers of petal 4, tile 1496 (masked cameras, NO DATA, alternate-fit
    rules, API page == script page), found via `$PROSPECT2_TEST_DATA`, `scratch/data/`, then the
    loa/nevis tile directory under `$DESI_ROOT`; skipped if absent. An explicitly set but wrong
    `$PROSPECT2_TEST_DATA` is an error, not a silent skip.
 4. *Browser* (opt-in, `-m browser`): headless Chrome loads a synthetic page; no JS errors, and
-   per-spectrum sums of the JS-decoded flux/model match the Python decoder.
+   per-spectrum sums of the JS-decoded flux/model match the Python decoder; a stacked two-source
+   page (alternate-fit rows via `owner`, sources); the incompatible-format banner.
 
 Decisions:
 - *No byte-identical golden page in pytest:* every intentional change would break it. `cmp`
   against the previous build stays the manual check for refactors (CLAUDE.md).
 - *No real-data fixture in git:* 2–4 MB of binaries forever; tier 3 runs wherever the data are.
-- `decode_q2` in `test/util.py` duplicates the JS `decodeQ2`; tier 4 guards against drift.
+- `decode_q2` in `test/util.py` duplicates the JS `decodeQ2`; tier 4 guards against drift. The
+  package's own decoder (`encode.decode_noise_flux`, for `PageData.flux`) is checked against it.
 - Model round trip: error ≤ half a step. (Until 2026-11-14 the model was quantized with the exact
-  scale but decoded with the 6-digit `mscale`, adding up to 5e-6·|model|; now `encode_model`
+  scale but decoded with the 6-digit `mscale`, adding up to 5e-6·|model|; now `quantize_model`
   quantizes with the rounded scale.)
 - Chrome must run without `--user-data-dir`: with it, headless Chrome on macOS hangs.
 
@@ -166,7 +176,8 @@ must match `redrock-X.fits` (z and SPECTYPE) or that target gets no alternates. 
   - encoded like the best model but at `--alt-model-precision` (default σ/30, max error 0.017σ;
     staircases may show when zoomed + smoothed, extrapolated ~8–20 device px worst case vs 2.5–6
     at σ/100).
-  Stored as payload `amodel`/`amscale` rows; a fit's array gets a 7th element = its row. Other
+  Stored as `arrays.amodel` rows, each with its `owner` (spectrum, fit); the JS sets the fit's
+  `m` = row at load (before 2026-11-17: a 7th element of the fit's array). Other
   alternates hide the model with the reason under the plot. The masked-model rules (MHIDE fill,
   no model in a fully masked camera) apply to these rows too (`AHIDE`).
   - Lower *wavelength* resolution was measured and rejected: the resolution-convolved model is
@@ -207,64 +218,231 @@ in resolution, which is fine for display, and avoids shipping templates to the b
   existing …` instead of `Wrote …`.
 - Naming errors are raised before `read_spectra`, so they are immediate.
 
+## Payload versioning
+
+**The payload is versioned** (user decision 2026-11-17, replacing "the payload is internal, no
+version contract" of 2026-11-15). Pages are now read back by Python (`PageData`, to filter and
+stack them), so the payload is a contract between page files and code versions.
+
+- `format_version: "MAJOR.MINOR"` (`pagedata.FORMAT_VERSION`), no patch level: a schema has no bug
+  fixes of its own; value fixes are generator changes, recorded in `generator` (provenance only).
+  - *major*: a stored key is removed or renamed, or changes meaning or encoding (incl. q2).
+  - *minor*: stored keys are added. Readers must tolerate both unknown and *missing*
+    minor-added keys.
+- **Two consumers, different failure modes** (user, 2026-11-17: what Python can manipulate differs
+  from what a template can display):
+
+  | consumer            | fails on                                     | accepts                                                   |
+  |---------------------|----------------------------------------------|-----------------------------------------------------------|
+  | Python (`PageData`) | unknown *structural* keys (can't slice them) | same major (`check_readable`); a newer minor loses what it doesn't know (below) |
+  | template (display)  | *missing* keys it displays                   | every page of its major: it must tolerate missing minor-added keys |
+
+- **The template displays every page of its major** (user decision 2026-11-18, option A). A
+  separate "oldest displayable minor" (`TEMPLATE_MIN_VERSION`) was dropped: a page records only
+  the version that *wrote* it, and a 1.0 page rewritten by 1.1 code is labelled 1.1 while still
+  lacking the 1.1 stored keys, so such a minimum could not be checked (found in review). Anything
+  the template can't do without a minor-added key needs a major bump (discuss first, CLAUDE.md).
+  `render_html` writes `FORMAT_VERSION` into the template; the JS shows an "Incompatible page
+  data" banner for a different major, and only a console warning for a newer minor (it ignores
+  newer keys). Both are defensive only: `render_html` writes viewer and payload together with the
+  same version, so neither can fire for pages prospect2 writes; they guard against a payload pasted
+  into another viewer, or a future viewer that loads outside data.
+- **Older code reads newer minors, dropping what it doesn't know** (user decision 2026-11-18,
+  "middle option"). In DESI, people run whatever prospect2 their environment has, so pages from
+  newer code will meet older code; refusing every newer minor would make one added column force
+  everyone to upgrade. `from_payload` logs one warning naming what it drops: unknown top-level
+  keys, tables in `columns` other than fibermap/redshifts (and their columns), lowercase
+  per-target keys it doesn't know (stored or derived, it can't tell), `sources` fields, arrays not
+  in `encode.ARRAY_INFO`, and unknown fields of known arrays. Rewriting such a page gives a page
+  of the reader's `FORMAT_VERSION` without them. Rejected alternative: carry unknown data through
+  verbatim (a `stored` key list, generic tables and arrays). It loses nothing, but it adds a second,
+  untested-by-use code path and fixes design rules for every future minor (per-target values
+  must not index anything, arrays must declare their row space, ...), since old code would slice
+  and stack data it doesn't understand. It can be added in a later minor if version skew matters
+  in practice.
+- **Derived values are recomputed whenever a page is written**, by the current code, and written
+  pages always use the current template. So only *stored* data need compatibility, and old pages
+  pick up viewer fixes when restacked.
+- `PageData` ignores unknown top-level and lowercase per-target keys: within a readable version
+  they can only be derived values, which may be added without a version bump and are recomputed
+  anyway (a stored addition bumps the minor; see above for newer minors). An UPPERCASE key
+  missing from `columns` is an error. Any `arrays` entry with a known `pack` and row space is
+  sliced generically, so a new per-pixel array needs no slicing code. (Review, 2026-11-18: strict
+  checking would have made pages from newer same-version code unreadable.)
+- Written pages are always labelled with the current `FORMAT_VERSION`: the payload is written by
+  the current code, and stored keys an older input lacks are tolerated by every reader of that
+  major. (Review, 2026-11-18: stamping a stack with its oldest input's version mislabels keys the
+  current code adds.) `PageData` has no version attribute.
+- No NaN/Infinity in the payload: `JSON.parse` rejects them and the page stays blank. Non-finite
+  floats are written as null, an infinite `--alt-max-dchi2` as `max_dchi2: null` (no limit), and
+  `render_html` uses `allow_nan=False` so anything missed fails when written, not in the browser.
+- `test_pagedata.py::test_payload_keyset_guard` records the stored key sets per version and fails if
+  they change without a version bump.
+- Pages made before format 1.0 (no `format_version`) can't be read; regenerate them.
+
 ## Payload contents
 
-**The payload is internal** (user decision, 2026-11-15): one JSON object, built by
-`make_payload()` (`page.py`), written by `render_html()` in place of `"__DATA__"`, and read by the
-viewer as `const D`. It always ships in the same file as the JS that reads it, so it has no
-version contract and can change freely; keep this section current instead.
+One JSON object, built by `PageData.payload()`, written by `render_html()` into
+`<script type="application/json" id="prospect2-data">` (so any tool can extract it without
+parsing JS; every `<` is written `\u003c`), and read by the viewer as `D = JSON.parse(...)`.
 
 Top level (`D.x`):
 
 | key | meaning |
 |---|---|
-| `title` | page title: `title` argument, else `provenance['source']`, else `'prospect2'` |
-| `source` | input file name, else `title`; never null. Keys the VI in localStorage and names the VI export |
-| `redrock`, `model_source`, `rrdetails` | provenance file names (or `'input models'`, `'redrock templates + COEFF'`), or null; shown in the header tooltip and help overlay |
+| `format_version`, `generator` | see "Payload versioning" |
+| `title` | page title: `title` argument, else `PageData.title`, else the single source's file name, else `'prospect2'` |
+| `vi_key` | keys the VI in localStorage and names the VI export: the source file of a single-source page (so VI survives regenerating, filtering or restacking it), else the title; never null |
+| `sources` | list of `{source, redrock, model_source, rrdetails}` (file names, or `'input models'`, `'redrock templates + COEFF'`, or null): the inputs; shown in the header tooltip and help overlay. Identical sources are merged when stacking |
 | `wave0`, `dwave`, `nwave` | the merged linear wavelength grid (`coadd_cameras`); JS `WAVE`, `NW` |
 | `nspec`, `flux_unit` | number of spectra; flux unit label |
-| `spgrp`, `keycols` | the inputs' SPGRP (or null) and the columns of the unique key that keys the VI (`grouping.key_columns`) |
-| `targets` | one dict per spectrum, row order = data rows (below) |
-| `lines` | emission/absorption line lists (`io.read_lines`) |
+| `spgrp`, `keycols` | the inputs' SPGRP (or null) and the columns of the unique key that keys the VI (`grouping.key_columns`); recomputed when written |
+| `columns` | `{fibermap: {COL: dtype}, redshifts: {COL: dtype} or null}`: which table each stored UPPERCASE column belongs to, and its dtype (`i8`, `f4`, `U6`, ...; strings keep their width, so a value written into a reloaded subset isn't truncated) so it reads back exactly |
+| `targets` | per-target values, **column-oriented**: `{KEY: [value per spectrum]}` (below) |
+| `lines` | emission/absorption line lists (`io.read_lines`; current package data when written) |
 | `overlaps` | camera overlap regions `[lo, hi, label]` |
-| `enc`, `noise`, `flux`, `model`, `mscale` | the q2 arrays (next section); `model`/`mscale` null without a zcat |
-| `amodel`, `amscale`, `alt_models` | only when alternate-fit models exist: their rows, and the `--alt-models`/`--alt-max-dchi2` settings |
+| `alt_models` | `{n, max_dchi2}` (`--alt-models`/`--alt-max-dchi2`) when alternate-fit models exist, else null |
+| `arrays` | the per-pixel q2 arrays (below) |
 
-`targets[i]` (JS `T[i]`), all plain JSON:
-- Always: `i`, `targetid` (**string**, int64 > 2^53), `fiber`, `tileid`, `night`, `expid`, `survey`,
-  `program` (grouping values, `grouping.grouping_columns`), `ra`, `dec`, `objtype`,
-  `morph`, `classes`/`primary` (target-bit names), `mag` (`{g, r, z, w1, w2}`), `fibermag_r`,
-  `ebv`, `exptime`, `numexp`, `fiberstatus`, `fiberstatus_names`, `snr` (`{band: median S/N}`),
-  `masked_cams` (`[lo, hi, band]` for cameras with no unmasked pixels). Values from optional
-  fibermap columns can be null (strings: `''`), so the JS must handle that; see "Python API".
-- With a zcat: `z`, `zerr`, `zwarn`, `zwarn_names`, `spectype`, `subtype`, `deltachi2`, `chi2`,
-  `npixels`. Absent, not null, without one. Redrock's no-fit placeholders are kept raw; see
-  "Degenerate spectra".
-- With rrdetails, non-sky only: `fits`, compact arrays `[z, spectype, subtype, Δχ², zwarn, dup(,
-  model row)]` (`_fit_table`). The JS expands them to objects `{z, st, sub, dchi2, zw, dup, m}`
-  at load, and adds `t.ngood` (unmasked pixel count) after decoding.
+`targets` is column-oriented (user, 2026-11-17: one per-target structure in the HTML, no duplicate
+tables; columns store each key once: 386 → 234 kB on the petal page). The JS builds `T[i]` objects
+from it at load. Key case says what a key is:
 
-Decoded arrays: `FLUX`, `NOISE`, `MODEL` are `Float32Array(nspec·NW)`, row *i* = `T[i]`
+| keys | meaning | read into | when written |
+|---|---|---|---|
+| UPPERCASE | stored, named exactly as the DESI column (user, 2026-11-17) | `PageData.fibermap` / `.redshifts` (per `columns`) | from the tables |
+| `snr`, `masked_cams`, `zfits`, `src` | prospect2's own stored values that can't be recomputed (their pixels are gone) | `PageData.extra` | as is |
+| `classes`, `primary`, `zwarn_names`, `fiberstatus`, `fiberstatus_names`, `exptime`, `numexp` | derived display values | ignored | recomputed |
+
+- Stored fibermap columns (only what the viewer uses, user 2026-11-17): TARGETID; the grouping
+  values SURVEY, PROGRAM, TILEID, FIBER, NIGHT, EXPID (from columns or headers,
+  `grouping.grouping_columns`; omitted where unknown for every row); TARGET_RA/DEC, OBJTYPE,
+  MORPHTYPE, FLUX_G/R/Z/W1/W2, FIBERFLUX_R, EBV, COADD_EXPTIME/EXPTIME, COADD_NUMEXP,
+  COADD_FIBERSTATUS/FIBERSTATUS when present; and the raw target-bit columns
+  (`[SV1_|SV2_|SV3_](DESI|BGS|MWS|SCND)_TARGET`, `CMX_TARGET`), so
+  `p.fibermap['DESI_TARGET'] & desi_mask.QSO` works. Strings are stripped.
+- Stored redshift columns: Z, ZERR, ZWARN, SPECTYPE, SUBTYPE (masked `--` → `''`), DELTACHI2, CHI2,
+  NPIXELS; absent without a zcat. Redrock's no-fit placeholders are kept raw; see "Degenerate spectra".
+- JSON values: int64 TARGETID and target bits are **strings** (> 2^53); other ints are numbers
+  (strings if any value is beyond ±2^53, compared as integers); float32 values are written as the shortest decimal that round-trips in
+  float32; NaN and masked values are null (read back: floats NaN, others masked).
+- Mags are not stored: the JS computes them from FLUX_* (`mag()`), so they can't disagree.
+- `exptime`, `fiberstatus`, `numexp` normalize COADD_* vs per-exposure columns, so the JS has no
+  fallback logic.
+- `zfits` (rrdetails, non-sky only; else null): `[z, spectype, subtype, Δχ², zwarn, dup]` per fit
+  (`_fit_table`), positional; readers tolerate extra trailing elements, so appending one is a minor
+  change. The JS expands them to `{z, st, sub, dchi2, zw, dup, m}`, `m` from `arrays.amodel.owner`.
+- `src`: index into `sources`. `t.ngood` (unmasked pixel count) is added by the JS after decoding.
+
+`arrays` (self-describing, so stacking can slice any of them without knowing what it is):
+
+```
+noise:  {rows: "spec", pack: "esc8", enc: "q2-dlnoise", data: [int8 b64gz, int32 b64gz]}
+flux:   {rows: "spec", pack: "esc8", enc: "q2-flux",    data: [...]}
+model:  {rows: "spec", pack: "esc8", enc: "q2-model",   data: [...], scale: [per row]}       (with a zcat)
+amodel: {rows: "alt",  pack: "esc8", enc: "q2-model",   data: [...], scale: [...],
+         owner: [[spectrum, fit], ...]}                                                      (alternate-fit models)
+```
+
+Any key besides `rows`/`pack`/`enc`/`data` is a per-row side list, sliced with the rows. Row space
+`spec` = one row per spectrum; any other row space needs `owner`, one `[spectrum, ...]` list per
+row. Column 0 is always the spectrum index (slicing and stacking use only it, so they handle any
+row space); the other columns' meaning belongs to the row space (`alt`: the fit, an index into that
+spectrum's `zfits`). Only `alt` owners are checked against `zfits` (a future row space, e.g.
+archetype models, would not have fit indices).
+
+Decoded arrays (JS): `FLUX`, `NOISE`, `MODEL` are `Float32Array(nspec·NW)`, row *i* = `T[i]`
 (`row(arr, i)`), masked = NaN. `AMODEL` rows are indexed by a fit's `m`. `MHIDE`/`AHIDE` flag the
 model pixels to hide (see "Masked model rule").
 
 **Recipes:**
-- *New per-target value:* add it to the `t = dict(...)` in `make_payload`, reading fibermap
-  columns with `col(...)` (`fibermap_value`) so a missing column gives null, and read `T[i].key` in
-  the JS; no template placeholder is needed. Show it in `renderInfo()`; to filter on it, add it to
-  `FIELDS` (numeric comparisons) or to the label string in `compileTerm` (substring match), and
-  update the filter help in the template and README. Test it in `test_page.py`. Nothing checks
-  that a payload key is used by the JS, or that a key the JS reads exists (it is just
-  `undefined`).
-- *New per-pixel array:* encode it in `encode.py`, decode it in `decodeQ2()` **and** in
-  `test/util.py` `decode_q2`, then run `pytest -m browser`.
+- *New stored fibermap/redshift column:* add it to `FIBERMAP_COLUMNS`/`REDSHIFT_COLUMNS`
+  (`pagedata.py`) and read `t.COLUMN` in the JS (it is undefined on pages without it). That is a
+  minor version bump: update `KEYSETS` in `test_pagedata.py`.
+- *New derived value:* compute it in `PageData._derived()` from the tables, add it to
+  `DERIVED_KEYS`; no version bump (it's recomputed, and readers ignore derived keys they don't
+  know), but update `KEYSETS`. The JS must tolerate it missing on pages written by older code
+  only if such pages are displayed without rewriting; rewritten pages always get it.
+- Either way: show it in `renderInfo()`; to filter on it, add it to `FIELDS` (numeric comparisons)
+  or to the label string in `compileTerm` (substring match), and update the filter help in the
+  template and README. Nothing checks that a payload key is used by the JS, or that a key the JS
+  reads exists (it is just `undefined`).
+- *New per-pixel array:* quantize it in `encode.py`, add it to `ARRAY_INFO` and to `arrays` in
+  `from_spectra`, decode it in `decodeQ2()` **and** in `test/util.py` `decode_q2`, bump the minor
+  version, then run `pytest -m browser`.
+
+## PageData: load, filter, stack
+
+**Pages can be manipulated like desispec Spectra** (user, 2026-11-17), so the usual DESI workflow
+works on HTML pages instead of FITS:
+
+```python
+from prospect2 import read_page, write_page, stack
+pages = [read_page(f) for f in files]                          # cf. read_spectra
+pages = [p[p.redshifts['SPECTYPE'] == 'QSO'] for p in pages]   # same idiom as Spectra
+write_page('qso.html', stack(pages))                           # cf. desispec stack, write_spectra
+```
+
+- Why: reading a 500-spectrum page takes 0.07 s, vs 7.5 s to generate it from FITS (local SSD;
+  more at NERSC). Measured on petal 4 / tile 1496.
+- *Lossless:* per-pixel arrays stay quantized (int8 matrix + int32 escapes, never int64: 10 petals
+  × 4 arrays would be ~1.2 GB) and are sliced at the integer level. A page selected or stacked
+  from pages equals one generated directly from the same spectra (`test_select_equals_direct`,
+  `test_stack_equals_direct`; checked on petal 4: two halves restacked == the full page, and a
+  20-fiber slice == `example-20.html`).
+- *Style* (user, 2026-11-17): a lightweight data wrapper with slicing, like Spectra; file I/O as
+  functions (`io.read_page`, `io.write_page`); `stack()` a module function, like
+  `desispec.spectra.stack`. `from_html`/`to_html` and `from_payload`/`payload` are members.
+- `fibermap`, `redshifts` are astropy Tables with DESI names; `extra` holds `snr`, `masked_cams`,
+  `zfits`, `src`. The tables are editable and edits are written (derived values follow; column
+  names must be UPPERCASE). Rows must stay in place: reorder with `p[order]`
+  (e.g. `p[np.argsort(p.redshifts['Z'])]`). Writing or stacking a page whose `fibermap` or
+  `redshifts` was sorted in place is an error, because the arrays and `extra` would then belong to
+  other targets (review, 2026-11-18: `p.redshifts.sort('Z')` silently wrote wrong redshifts).
+  Constructed pages are checked: `owner` column 0 must be a spectrum index, alternate-fit
+  (`alt`) `owner` rows must point to existing fits in `zfits`, `src` into `sources`. Selections copy `sources` and `alt_models`. `flux`, `noise`, `model`, `wave` are decoded lazily (float64).
+- `make_html` and the script go through `PageData.from_spectra`, so generated and stacked pages
+  are built by one code path.
+- *Title* (user, 2026-11-18): `p.title` is settable and `stack(pages, title=)` sets it, because the
+  default (a selection keeps its page's title; a stack is titled after its single source, e.g. the
+  coadd of one petal) can look like a whole-file page. `vi_key` stays the single source's name
+  regardless, so VI still follows the spectra.
+- `stack` refuses different wavelength grids, flux units or overlaps, mixed SPGRP, model vs no
+  model, different alternate-fit model settings among pages that show alternate fits (`zfits`; a
+  page with fits but no stored models, `alt_models` null, differs from one with models, so its
+  fits aren't later described with the other page's limits; `from_spectra` records the settings
+  even when no fit qualified for a model), and the same spectrum twice: TARGETID plus every known
+  grouping value (SURVEY, PROGRAM, TILEID, FIBER, NIGHT, EXPID) equal, beyond duplicates the
+  inputs already had. Pages without `zfits` or alternate-fit models stack with pages that have them
+  (they add no rows).
+- Empty pages (a selection that matched nothing, e.g. a petal with no QSOs) are valid and stack;
+  only writing one is an error.
+- If the spectra are not unique by their key (e.g. repeated indices `p[[3, 3]]`), VI is keyed by
+  row, and `vi_key` gets a hash of the page's TARGETID list, so row-keyed VI never carries over to
+  a different list of spectra. (VI saved on row-keyed pages from before 2026-11-18 is under the old
+  key and no longer shows; such pages were rare, and pre-1.0 pages are unreadable anyway.)
+- No command-line tool yet (user, 2026-11-17): the use cases are unclear until there is
+  experience with the API.
 
 ## Payload encoding ("q2")
 
 The payload is gzip + base64, decoded in the browser with `DecompressionStream`. The example page
-is 485 kB, 10.2× smaller than the 4.95 MB Bokeh page for the same 20 spectra.
+is 513 kB, 9.6× smaller than the 4.95 MB Bokeh page for the same 20 spectra.
 
-- **Packing (`_esc8`):** every integer array is stored as an int8 stream plus an int32 escape
+- **gzip level 6** (user, 2026-11-18; was 9). Once pages are re-read and rewritten (`PageData`),
+  gzip dominated writing. Measured on the q2 arrays (whole page size; gzip time, serial):
+
+  | level | petal 4 (500 spectra) | vs 9  | gzip time | example-20 | vs 9  |
+  |-------|-----------------------|-------|-----------|------------|-------|
+  | 1     | 9.586 MB              | +9.0% | 0.13 s    | 0.541 MB   | +6.3% |
+  | 3     | 9.312 MB              | +5.9% | 0.21 s    | 0.530 MB   | +4.1% |
+  | 6     | 8.889 MB              | +1.1% | 0.53 s    | 0.513 MB   | +0.8% |
+  | 9     | 8.792 MB              | —     | 3.82 s    | 0.509 MB   | —     |
+
+  Level 9 took 7× longer than 6 to save ~1%; below 6, size grows fast for little time saved.
+  Compressing the arrays in threads was not worth the code at level 6.
+
+- **Packing (`esc8` + `pack`, payload `pack: "esc8"`):** every integer array is stored as an int8 stream plus an int32 escape
   stream (-128 = take the next escape value; for flux, -127 = masked → NaN). gzip compresses
   bytes much better than int16/int32: this was ~20% smaller than the earlier int16/int32 "q1"
   packing of the *same* quantized values (2026-11-13; decoded floats verified bit-identical), and

@@ -39,7 +39,7 @@ where = ["py"]
 "prospect2" = ["data/*", "data/vendor/*"]
 
 [tool.setuptools.dynamic]
-version = {attr = "prospect2.__version__"}  # read with ast.literal_eval, no import needed
+version = {attr = "prospect2._version.__version__"}  # read with ast.literal_eval, no import needed
 
 [tool.pytest.ini_options]
 testpaths = ["py/prospect2/test"]

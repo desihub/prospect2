@@ -13,9 +13,10 @@ import pytest
 from desispec.coaddition import coadd_cameras
 from desispec.spectra import stack
 
-from prospect2.page import make_payload, make_html, _fit_table
+from prospect2.page import make_payload, make_html
+from prospect2.pagedata import _fit_table
 from prospect2.test.util import (synthetic_spectra, synthetic_zcat, synthetic_models, synthetic_fits,
-                                 decode_q2, payload_from_html, TARGETID0)
+                                 decode_q2, payload_from_html, target_rows, TARGETID0)
 
 NOALT = dict(alt_models=0)
 
@@ -28,23 +29,24 @@ def sp():
 def test_payload_basics(sp):
     zcat = synthetic_zcat(sp)
     p = make_payload(sp, zcat=zcat, models=synthetic_models(sp), provenance=dict(source='coadd-x.fits'), **NOALT)
-    assert p['nspec'] == 4 and p['title'] == 'coadd-x.fits' and p['source'] == 'coadd-x.fits'
-    assert p['model_source'] == 'input models'
+    assert p['nspec'] == 4 and p['title'] == 'coadd-x.fits' and p['vi_key'] == 'coadd-x.fits'
+    assert p['sources'] == [dict(source='coadd-x.fits', redrock=None, model_source='input models', rrdetails=None)]
     #- TARGETIDs > 2**53 go to JS as exact strings
-    assert [t['targetid'] for t in p['targets']] == [str(TARGETID0 + i) for i in range(4)]
-    assert all(t['z'] == 0.5 and t['spectype'] == 'GALAXY' and t['masked_cams'] == [] for t in p['targets'])
+    assert p['targets']['TARGETID'] == [str(TARGETID0 + i) for i in range(4)]
+    assert p['columns']['fibermap']['TARGETID'] == 'i8'
+    assert all(t['Z'] == 0.5 and t['SPECTYPE'] == 'GALAXY' and t['masked_cams'] == [] for t in target_rows(p))
     assert [o[2] for o in p['overlaps']] == ['b/r overlap', 'r/z overlap']
     json.dumps(p)          #- serializable
 
 
-def test_source_never_null(sp):
-    #- the JS keys stored VI and names the VI export by `source`
+def test_vi_key_never_null(sp):
+    #- the JS keys stored VI and names the VI export by `vi_key`: the source file, else the title
     p = make_payload(sp, **NOALT)
-    assert p['title'] == 'prospect2' and p['source'] == 'prospect2'
+    assert p['title'] == 'prospect2' and p['vi_key'] == 'prospect2' and p['sources'][0]['source'] is None
     p = make_payload(sp, title='My page', **NOALT)
-    assert p['source'] == 'My page'
+    assert p['vi_key'] == 'My page'
     p = make_payload(sp, title='My page', provenance=dict(source='coadd-x.fits'), **NOALT)
-    assert p['title'] == 'My page' and p['source'] == 'coadd-x.fits'
+    assert p['title'] == 'My page' and p['vi_key'] == 'coadd-x.fits'
 
 
 def test_minimal_fibermap(sp):
@@ -53,15 +55,15 @@ def test_minimal_fibermap(sp):
     sp2 = sp[:]
     sp2.fibermap = Table(dict(TARGETID=sp.fibermap['TARGETID']))
     p = make_payload(sp2, **NOALT)
-    t = p['targets'][0]
-    assert t['targetid'] == str(TARGETID0) and t['fiber'] is None and t['tileid'] is None
-    assert t['ra'] is None and t['dec'] is None and t['ebv'] is None and t['exptime'] is None
-    assert t['objtype'] == '' and t['morph'] == '' and t['mag']['r'] is None and t['fibermag_r'] is None
-    assert t['numexp'] == 1 and t['fiberstatus'] == 0
+    #- absent columns are absent from the page (undefined in JS); derived values have defaults
+    assert list(p['columns']['fibermap']) == ['TARGETID'] and p['columns']['redshifts'] is None
+    t = target_rows(p)[0]
+    assert t['TARGETID'] == str(TARGETID0) and 'FIBER' not in t and 'TARGET_RA' not in t
+    assert t['exptime'] is None and t['numexp'] == 1 and t['fiberstatus'] == 0 and t['classes'] == []
     json.dumps(p)
     #- with a zcat and models too
     p = make_payload(sp2, zcat=synthetic_zcat(sp2), models=synthetic_models(sp2), **NOALT)
-    assert p['targets'][0]['z'] == 0.5
+    assert p['targets']['Z'][0] == 0.5
 
 
 def test_uncoadded_fibermap(sp):
@@ -73,7 +75,7 @@ def test_uncoadded_fibermap(sp):
     fm['FIBERSTATUS'][1] = 2
     fm.remove_columns(['COADD_EXPTIME', 'COADD_NUMEXP', 'COADD_FIBERSTATUS'])
     sp2.fibermap = fm
-    t = make_payload(sp2, **NOALT)['targets']
+    t = target_rows(make_payload(sp2, **NOALT))
     assert t[0]['exptime'] == 900.0 and t[0]['numexp'] == 1 and t[0]['fiberstatus'] == 0
     assert t[1]['fiberstatus'] == 2
 
@@ -98,7 +100,7 @@ def test_payload_data_roundtrip(sp):
 
 def test_no_zcat(sp):
     p = make_payload(sp, **NOALT)
-    assert p['model'] is None and p['redrock'] is None and 'z' not in p['targets'][0]
+    assert 'model' not in p['arrays'] and p['sources'][0]['redrock'] is None and 'Z' not in p['targets']
 
 
 def test_spectra_attributes_and_overrides(sp):
@@ -107,12 +109,12 @@ def test_spectra_attributes_and_overrides(sp):
     sp2.redshifts = zcat
     sp2.model = synthetic_models(sp, 3.0)
     p = make_payload(sp2, **NOALT)
-    assert p['targets'][0]['z'] == 0.5
+    assert p['targets']['Z'][0] == 0.5
     assert np.allclose(decode_q2(p)[2], 3.0, atol=0.01)
     #- explicit arguments win
     zcat2 = synthetic_zcat(sp, z=1.25)
     p = make_payload(sp2, zcat=zcat2, models=synthetic_models(sp, 7.0), **NOALT)
-    assert p['targets'][0]['z'] == 1.25
+    assert p['targets']['Z'][0] == 1.25
     assert np.allclose(decode_q2(p)[2], 7.0, atol=0.05)
 
 
@@ -127,7 +129,7 @@ def test_row_matching_errors(sp):
     with pytest.raises(ValueError, match='without zcat'):
         make_payload(sp, models=synthetic_models(sp), **NOALT)
     with pytest.raises(ValueError, match='entries'):
-        make_payload(sp, zcat=zcat, models=synthetic_models(sp), fits=[None] * 3, **NOALT)
+        make_payload(sp, zcat=zcat, models=synthetic_models(sp), zfits=[None] * 3, **NOALT)
 
 
 def test_list_input(sp):
@@ -159,7 +161,7 @@ def test_masked_spectra():
     sp.ivar['z'][1] = 0                   #- spectrum 1: z camera masked
     p = make_payload(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp), **NOALT)
     flux = decode_q2(p)[0]
-    t0, t1, t2 = p['targets']
+    t0, t1, t2 = target_rows(p)
     assert np.all(np.isnan(flux[0]))
     assert [m[2] for m in t0['masked_cams']] == ['b', 'r', 'z'] and t0['snr'] == dict(b=None, r=None, z=None)
     assert [m[2] for m in t1['masked_cams']] == ['z']
@@ -181,22 +183,23 @@ def test_alternate_fits_display():
     sp = synthetic_spectra(nspec=3)
     sp.fibermap['OBJTYPE'][1] = 'SKY'
     zcat = synthetic_zcat(sp)
-    fits = [synthetic_fits([0.5, 1.2], [100.0, 110.0]),
-            synthetic_fits([0.5, 1.2], [100.0, 110.0]),
-            None]
-    p = make_payload(sp, zcat=zcat, models=synthetic_models(sp), fits=fits, **NOALT)
-    t0, t1, t2 = p['targets']
-    assert len(t0['fits']) == 2 and t0['fits'][1][:2] == [1.2, 'GALAXY']
-    assert 'fits' not in t1          #- sky fibers get no alternate fits
-    assert 'fits' not in t2
-    assert 'amodel' not in p
+    zfits = [synthetic_fits([0.5, 1.2], [100.0, 110.0]),
+             synthetic_fits([0.5, 1.2], [100.0, 110.0]),
+             None]
+    p = make_payload(sp, zcat=zcat, models=synthetic_models(sp), zfits=zfits, **NOALT)
+    t0, t1, t2 = target_rows(p)
+    assert len(t0['zfits']) == 2 and t0['zfits'][1][:2] == [1.2, 'GALAXY']
+    assert t1['zfits'] is None       #- sky fibers get no alternate fits
+    assert t2['zfits'] is None
+    assert 'amodel' not in p['arrays'] and p['alt_models'] is None
 
 
 def test_html(sp):
     html = make_html(sp, zcat=synthetic_zcat(sp), models=synthetic_models(sp), title='My page', **NOALT)
     assert '<meta charset="utf-8">' in html.lower()
     assert '<title>My page · prospect</title>' in html
-    for placeholder in ('/*__UPLOT_CSS__*/', '/*__UPLOT_JS__*/', '"__DATA__"', '__TITLE__'):
+    for placeholder in ('/*__UPLOT_CSS__*/', '/*__UPLOT_JS__*/', '"__DATA__"', '__TITLE__',
+                        '__FORMAT_VERSION__'):
         assert placeholder not in html
     assert payload_from_html(html)['title'] == 'My page'
 
@@ -213,4 +216,4 @@ def test_html_escaping():
         assert nasty.count(tag) == clean.count(tag)
     p = payload_from_html(nasty)
     assert p['title'] == 'a < b & "c" </title>'
-    assert p['targets'][0]['morph'] == '</script><!--'
+    assert p['targets']['MORPHTYPE'][0] == '</script><!--'

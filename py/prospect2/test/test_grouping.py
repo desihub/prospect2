@@ -12,7 +12,7 @@ from astropy.table import Table
 from prospect2.grouping import grouping_columns, key_columns
 from prospect2.page import make_payload, make_html
 from prospect2.util import select_spectra
-from prospect2.test.util import synthetic_spectra, payload_from_html, TARGETID0
+from prospect2.test.util import synthetic_spectra, payload_from_html, target_rows, TARGETID0
 
 NOALT = dict(alt_models=0)
 
@@ -77,10 +77,10 @@ def test_combined_tiles():
     a, b = tile_spectra(1496), tile_spectra(2000, night=20250101)
     p = payload_from_html(make_html([a, b], **NOALT))
     assert p['spgrp'] == 'cumulative' and p['keycols'] == ['TILEID', 'FIBER', 'NIGHT']
-    t = p['targets']
-    assert [(x['tileid'], x['night']) for x in t] == [(1496, 20240214)] * 3 + [(2000, 20250101)] * 3
-    assert t[0]['targetid'] == t[3]['targetid'] == str(TARGETID0)
-    assert t[0]['survey'] == 'main' and t[0]['program'] == 'dark1b'
+    t = target_rows(p)
+    assert [(x['TILEID'], x['NIGHT']) for x in t] == [(1496, 20240214)] * 3 + [(2000, 20250101)] * 3
+    assert t[0]['TARGETID'] == t[3]['TARGETID'] == str(TARGETID0)
+    assert t[0]['SURVEY'] == 'main' and t[0]['PROGRAM'] == 'dark1b'
 
 
 def test_combined_healpix():
@@ -88,8 +88,8 @@ def test_combined_healpix():
     a, b = healpix_spectra('main', 'dark'), healpix_spectra('main', 'bright')
     p = payload_from_html(make_html([a, b], **NOALT))
     assert p['keycols'] == ['SURVEY', 'PROGRAM', 'TARGETID']
-    assert [x['program'] for x in p['targets']] == ['dark'] * 3 + ['bright'] * 3
-    assert p['targets'][0]['fiber'] is None and p['targets'][0]['tileid'] is None
+    assert p['targets']['PROGRAM'] == ['dark'] * 3 + ['bright'] * 3
+    assert 'FIBER' not in p['targets'] and 'TILEID' not in p['targets']
 
 
 def test_duplicates_fall_back_to_row():
@@ -108,8 +108,8 @@ def test_prestacked_keeps_first_header():
     #- columns like TILEID survive, header-only values like NIGHT don't
     from desispec.spectra import stack
     sp = stack([tile_spectra(1496), tile_spectra(2000, night=20250101)])
-    t = make_payload(sp, **NOALT)['targets']
-    assert t[3]['tileid'] == 2000 and t[3]['night'] != 20250101
+    t = target_rows(make_payload(sp, **NOALT))
+    assert t[3]['TILEID'] == 2000 and t[3].get('NIGHT') != 20250101
 
 
 def test_select_fibers_needs_fiber_column():

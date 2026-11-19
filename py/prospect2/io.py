@@ -139,3 +139,39 @@ def read_lines():
             lines.append(dict(name=name, longname=longname, wave=round(lam, 2),
                               kind=kind[:3], major=(major == 'True')))
     return lines
+
+
+def write_html(html, outfile):
+    """Write page `html` to `outfile`, logging whether it replaced an existing file"""
+    log = get_logger()
+    verb = 'Overwrote existing' if os.path.exists(outfile) else 'Wrote'
+    with open(outfile, 'w', encoding='utf-8') as fx:
+        fx.write(html)
+    log.info(f'{verb} {outfile}: {os.path.getsize(outfile)/1e6:.2f} MB')
+
+
+def read_page(filename):
+    """
+    PageData from a prospect2 page (cf. desispec.io.read_spectra).  Raises
+    ValueError if the page's data format can't be read by this code.
+    """
+    from .pagedata import PageData
+    with open(filename, encoding='utf-8') as fx:
+        return PageData.from_html(fx.read())
+
+
+def write_page(filename, page, title=None):
+    """
+    Write PageData `page` as a viewer page (cf. desispec.io.write_spectra),
+    creating the directory if needed.  `title` default: page.title, else its
+    single source file, else (stacked pages) the output file's base name.
+    """
+    log = get_logger()
+    if title is None and page.title is None and len(page.sources) > 1:
+        title = os.path.splitext(os.path.basename(filename))[0]
+    html = page.to_html(title=title)          #- before creating directories: it may raise
+    outdir = os.path.dirname(filename)
+    if outdir and not os.path.isdir(outdir):
+        os.makedirs(outdir)
+        log.info(f'Created directory {outdir}')
+    write_html(html, filename)
